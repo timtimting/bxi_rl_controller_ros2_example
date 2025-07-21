@@ -1523,4 +1523,13 @@
     <axis
       xyz="0 0 0" />
   </joint>
+
+  <link name="mid360_link"/>
+  <joint name="mid360_joint" type="fixed">
+    <origin xyz="0 0 0.2188" rpy="3.1416 0 1.5708" />
+    <parent link="base_link" />
+    <child link="mid360_link" />
+    <axis xyz="0 0 0" />
+  </joint>
+
 </robot>

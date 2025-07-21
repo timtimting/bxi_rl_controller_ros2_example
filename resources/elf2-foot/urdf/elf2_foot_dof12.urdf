@@ -83,7 +83,7 @@
   </link>
   <joint
     name="waist_y_joint"
-    type="revolute">
+    type="fixed">
     <origin
       xyz="0 0 -0.2087"
       rpy="0 0 0" />
@@ -141,7 +141,7 @@
   </link>
   <joint
     name="waist_x_joint"
-    type="revolute">
+    type="fixed">
     <origin
       xyz="0 0 0"
       rpy="0 0 0" />
@@ -199,7 +199,7 @@
   </link>
   <joint
     name="waist_z_joint"
-    type="revolute">
+    type="fixed">
     <origin
       xyz="0 0 0"
       rpy="0 0 0" />
@@ -953,7 +953,7 @@
   </link>
   <joint
     name="l_shld_y_joint"
-    type="revolute">
+    type="fixed">
     <origin
       xyz="0 0.21705 0.09205"
       rpy="0 0 0" />
@@ -1011,7 +1011,7 @@
   </link>
   <joint
     name="l_shld_x_joint"
-    type="revolute">
+    type="fixed">
     <origin
       xyz="0 0 0"
       rpy="0 0 0" />
@@ -1069,7 +1069,7 @@
   </link>
   <joint
     name="l_shld_z_joint"
-    type="revolute">
+    type="fixed">
     <origin
       xyz="0 0 0"
       rpy="0 0 0" />
@@ -1127,7 +1127,7 @@
   </link>
   <joint
     name="l_elb_y_joint"
-    type="revolute">
+    type="fixed">
     <origin
       xyz="0 0 -0.24"
       rpy="0 0 0" />
@@ -1185,7 +1185,7 @@
   </link>
   <joint
     name="l_elb_z_joint"
-    type="revolute">
+    type="fixed">
     <origin
       xyz="0 0 0"
       rpy="0 0 0" />
@@ -1243,7 +1243,7 @@
   </link>
   <joint
     name="r_shld_y_joint"
-    type="revolute">
+    type="fixed">
     <origin
       xyz="0 -0.21705 0.09205"
       rpy="0 0 0" />
@@ -1301,7 +1301,7 @@
   </link>
   <joint
     name="r_shld_x_joint"
-    type="revolute">
+    type="fixed">
     <origin
       xyz="0 0 0"
       rpy="0 0 0" />
@@ -1359,7 +1359,7 @@
   </link>
   <joint
     name="r_shld_z_joint"
-    type="revolute">
+    type="fixed">
     <origin
       xyz="0 0 0"
       rpy="0 0 0" />
@@ -1417,7 +1417,7 @@
   </link>
   <joint
     name="r_elb_y_joint"
-    type="revolute">
+    type="fixed">
     <origin
       xyz="0 0 -0.24"
       rpy="0 0 0" />
@@ -1475,7 +1475,7 @@
   </link>
   <joint
     name="r_elb_z_joint"
-    type="revolute">
+    type="fixed">
     <origin
       xyz="0 0 0"
       rpy="0 0 0" />
@@ -1523,4 +1523,13 @@
     <axis
       xyz="0 0 0" />
   </joint>
+
+  <link name="mid360_link"/>
+  <joint name="mid360_joint" type="fixed">
+    <origin xyz="0 0 0.2188" rpy="3.1416 0 1.5708" />
+    <parent link="base_link" />
+    <child link="mid360_link" />
+    <axis xyz="0 0 0" />
+  </joint>  
+
 </robot>
