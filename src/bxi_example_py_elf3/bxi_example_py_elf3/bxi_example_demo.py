@@ -250,7 +250,6 @@ class BxiExample(Node):
         self.sim_rest_srv = self.create_client(bxiSrv.SimulationReset, self.topic_prefix+'sim_reset')
         
         self.timer_callback_group_1 = MutuallyExclusiveCallbackGroup()
-        self.timer_callback_group_2 = MutuallyExclusiveCallbackGroup()
 
         self.lock_in = Lock()
         self.lock_ou = self.lock_in #Lock()
@@ -274,11 +273,12 @@ class BxiExample(Node):
                 self.loop_count = 0
                 self.dance_mode_changed = True
                 self.dance.timestep = self.start_frame_dance
+                self.dance.action = np.zeros(self.dance.num_actions, dtype=np.float32)
                 return
             
             case robotState.host:
                 self.loop_count = 0
-                print("loop:", self.loop_count)
+                self.host.action = np.zeros(self.host.num_actions, dtype=np.float32)
                 return
         return
     
@@ -295,7 +295,7 @@ class BxiExample(Node):
             print('robot reset 1!')
             self.step = 1
             return
-        elif self.step == 1 and self.loop_count >= (1./self.dt): # 延迟2s
+        elif self.step == 1 and self.loop_count >= (1./self.dt): # 延迟1s
             self.robot_reset(2, True) # first reset
             print('robot reset 2!')
             self.loop_count = 0
@@ -366,7 +366,7 @@ class BxiExample(Node):
                 kd = np.zeros(dof_num, dtype=np.float32)
 
             elif self.state == robotState.pd_brake:
-                soft_start = self.loop_count/(2./self.dt) # 1秒关节缓启动
+                soft_start = self.loop_count/(2./self.dt)
                 if soft_start > 1:
                     soft_start = 1
                     
@@ -528,8 +528,8 @@ class BxiExample(Node):
 
     def joy_callback(self, msg):
         with self.lock_in:
-            self.vx = msg.vel_des.x * 2                 # * 3
-            self.vx = np.clip(self.vx, -1.5, 2.0)       # -2.0  3.0
+            self.vx = msg.vel_des.x * 3                 # * 3
+            self.vx = np.clip(self.vx, -2.0, 3.0)       # -2.0  3.0
             self.vy = msg.vel_des.y * 2
             self.dyaw = msg.yawdot_des * 2
 
@@ -539,7 +539,7 @@ class BxiExample(Node):
             initial_pos_mode = msg.btn_4        # RB+Y 切换为初始状态
 
             dance_mode = msg.btn_5              # LB+X 切换为跳舞模式
-            host_mode = msg.btn_6               # RB+A 切换为host模式
+            host_mode = msg.btn_6               # LB+A 切换为host模式
             # = msg.btn_7
             # = msg.btn_8
 
