@@ -528,8 +528,8 @@ class BxiExample(Node):
 
     def joy_callback(self, msg):
         with self.lock_in:
-            self.vx = msg.vel_des.x * 3                 # * 3
-            self.vx = np.clip(self.vx, -2.0, 3.0)       # -2.0  3.0
+            self.vx = msg.vel_des.x * 2                 # * 3
+            self.vx = np.clip(self.vx, -1.5, 2.0)       # -2.0  3.0
             self.vy = msg.vel_des.y * 2
             self.dyaw = msg.yawdot_des * 2
 
