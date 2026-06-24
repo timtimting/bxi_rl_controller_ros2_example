@@ -205,7 +205,7 @@ class RobotControlState(StateBehavior[BxiExample]):
             if first_frame is None:
                 ctx.hold_last_motor_target()
                 return
-            self._prepared_first_frame = self._motor_frame(*first_frame)
+            self._prepared_first_frame = self._ctx_motor_frame(ctx, first_frame)
 
         qpos, kp_target, kd_target = self._prepared_first_frame
         alpha = min(max(float(progress), 0.0), 1.0)
@@ -266,7 +266,7 @@ class RobotControlState(StateBehavior[BxiExample]):
             if callable(sampler):
                 frame = sampler(ctx, role, transition)
                 if frame is not None:
-                    return self._motor_frame(*frame)
+                    return self._ctx_motor_frame(ctx, frame)
 
         return self._fallback_transition_frame(ctx, state, role, transition)
 
@@ -283,7 +283,7 @@ class RobotControlState(StateBehavior[BxiExample]):
         if mode in ("none", "disabled", "disable"):
             return None
         if mode in ("last_motor", "hold_last", "hold_last_motor"):
-            return self._motor_frame(ctx.pos_last, ctx.kp_last, ctx.kd_last)
+            return self._ctx_motor_frame(ctx, (ctx.pos_last, ctx.kp_last, ctx.kd_last))
         if mode == "first_frame":
             first_frame = None
             getter = getattr(state, "get_first_frame", None)
@@ -291,7 +291,7 @@ class RobotControlState(StateBehavior[BxiExample]):
                 first_frame = getter(ctx)
             if first_frame is None:
                 return None
-            return self._motor_frame(*first_frame)
+            return self._ctx_motor_frame(ctx, first_frame)
 
         raise ValueError(f"unsupported transition frame fallback mode: {mode}")
 
@@ -355,3 +355,9 @@ class RobotControlState(StateBehavior[BxiExample]):
             np.asarray(kp, dtype=np.float32).copy(),
             np.asarray(kd, dtype=np.float32).copy(),
         )
+
+    def _ctx_motor_frame(self, ctx: BxiExample, frame: MotorFrame) -> MotorFrame:
+        normalizer = getattr(ctx, "normalize_motor_frame", None)
+        if callable(normalizer):
+            return normalizer(*frame)
+        return self._motor_frame(*frame)

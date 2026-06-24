@@ -6,10 +6,10 @@ import onnxruntime as ort
 
 from scipy.spatial.transform import Rotation
 
-dof_num = 29
+default_dof_num = 29
 
 class NormalMotionPolicyMjlab:
-    def __init__(self, model_onnx_path: str):
+    def __init__(self, model_onnx_path: str, dof_num: int = default_dof_num):
         """
         Args:
             model_onnx_path: ONNX模型文件路径
@@ -22,7 +22,8 @@ class NormalMotionPolicyMjlab:
             self.target_dof_pos = self.infer_step(self, q, dq, quat, omega, cmd):
         """
         self.num_obs = 96
-        self.num_action = dof_num
+        self.dof_num = int(dof_num)
+        self.num_action = self.dof_num
         self.model_onnx_path = model_onnx_path
 
         self.target_q = np.zeros(self.num_action, dtype=np.double)
@@ -94,7 +95,7 @@ class NormalMotionPolicyMjlab:
         qpos = self.default_joint_pos.copy()
         qpos[:] += self.target_q[:]
         return qpos
-    
+
     def infer_step(self, q, dq, quat, omega, cmd):
         obs = np.zeros([1, self.num_obs], dtype=np.float32)
         projected_gravity = self.projected_gravity_from_quat(quat, np.array([0, 0, -1]))
@@ -135,4 +136,3 @@ class NormalMotionPolicyMjlab:
         # apply方法将向量从世界系旋转到机体系
         return rot_inv.apply(gravity)
         # return gravity
-    

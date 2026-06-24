@@ -39,9 +39,10 @@ class NormalState(RobotControlState):
         self, ctx: BxiExample, dt: float, on_translation: bool
     ) -> Optional[MotorFrame]:
         cmd_vel = self.get_cmd_vel(ctx)
+        q, dq = ctx.get_model_joint_state(ctx.normal)
         qpos, vel = ctx.normal.inference_step(
-            ctx.current_q,
-            ctx.current_dq,
+            q,
+            dq,
             ctx.current_quat_wxyz,
             ctx.current_omega,
             cmd_vel,
@@ -132,9 +133,10 @@ class DanceState(RobotControlState):
         if ctx.dance.timestep >= ctx.dance.motionpos.shape[0]:
             return None
 
+        q, dq = ctx.get_model_joint_state(ctx.dance)
         qpos = ctx.dance.inference_step(
-            ctx.current_q,
-            ctx.current_dq,
+            q,
+            dq,
             ctx.current_quat_wxyz,
             ctx.current_omega,
         )
@@ -230,10 +232,11 @@ class MotionState(RobotControlState):
         self, ctx: BxiExample, dt: float, on_translation: bool
     ) -> Optional[MotorFrame]:
         policy = self._policy(ctx)
+        q, dq = ctx.get_model_joint_state(policy)
 
         qpos = policy.inference_step(
-            ctx.current_q,
-            ctx.current_dq,
+            q,
+            dq,
             ctx.current_quat_wxyz,
             ctx.current_omega,
         )
@@ -354,9 +357,10 @@ class HandPlayBackState(RobotControlState):
 
     def get_motor_frame(self, ctx, dt, on_translation):
         cmd_vel = self.get_cmd_vel(ctx)
+        q, dq = ctx.get_model_joint_state(ctx.withoutarm)
         qpos, vel = ctx.withoutarm.inference_step(
-            ctx.current_q,
-            ctx.current_dq,
+            q,
+            dq,
             ctx.current_quat_wxyz,
             ctx.current_omega,
             cmd_vel,
@@ -435,9 +439,10 @@ class HelloState(RobotControlState):
         if self.shaketime < 50:
             self.kp = self.shaketime / 50 * ctx.withoutarm.kps
         cmd_vel = self.get_cmd_vel(ctx)
+        q, dq = ctx.get_model_joint_state(ctx.withoutarm)
         qpos, vel = ctx.withoutarm.inference_step(
-            ctx.current_q,
-            ctx.current_dq,
+            q,
+            dq,
             ctx.current_quat_wxyz,
             ctx.current_omega,
             cmd_vel,
@@ -529,9 +534,10 @@ class RecoverState(RobotControlState):
         if ctx.recover.timestep > ctx.recover.end_frame:
             return None
 
+        q, dq = ctx.get_model_joint_state(ctx.recover)
         qpos = ctx.recover.inference_step(
-            ctx.current_q,
-            ctx.current_dq,
+            q,
+            dq,
             ctx.current_quat_wxyz,
             ctx.current_omega,
         )
@@ -602,9 +608,10 @@ class AmpRunState(RobotControlState):
         self, ctx: BxiExample, dt: float, on_translation: bool
     ) -> Optional[MotorFrame]:
         cmd_vel = self.get_cmd_vel(ctx)
+        q, dq = ctx.get_model_joint_state(ctx.amp_run)
         qpos, vel = ctx.amp_run.inference_step(
-            ctx.current_q,
-            ctx.current_dq,
+            q,
+            dq,
             ctx.current_quat_wxyz,
             ctx.current_omega,
             cmd_vel,
@@ -662,9 +669,10 @@ class NormalRunState(RobotControlState):
         self, ctx: BxiExample, dt: float, on_translation: bool
     ) -> Optional[MotorFrame]:
         cmd_vel = self.get_cmd_vel(ctx)
+        q, dq = ctx.get_model_joint_state(ctx.normal_run)
         qpos = ctx.normal_run.infer_step(
-            ctx.current_q,
-            ctx.current_dq,
+            q,
+            dq,
             ctx.current_quat_xyzw,
             ctx.current_omega,
             cmd_vel,

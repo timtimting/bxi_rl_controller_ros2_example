@@ -7,7 +7,7 @@ from bxi_example_py_elf3.utils.tfs import get_gravity_orientation
 class HumanoidGaitPolicyLiteIsaaclab:
     """不带步态输入的AMP行走动作策略管理类"""
     
-    def __init__(self, model_onnx_path: str):
+    def __init__(self, model_onnx_path: str, dof_num: int = 29):
         """
         初始化策略
         
@@ -21,7 +21,7 @@ class HumanoidGaitPolicyLiteIsaaclab:
             ##2.推理动作
             self.target_dof_pos = self.amp_policy.inference_step(q, dq, quat, omega, cmd_vel)
         """
-        
+        self.dof_num = int(dof_num)
         self.model_onnx_path = model_onnx_path
 
         self.action_scale = np.array([
@@ -146,7 +146,7 @@ class HumanoidGaitPolicyLiteIsaaclab:
         # Number of actions and observations.
         # 960/1020D policies are full-body models. 540D policies are no-arm
         # models and only command waist + legs; applause overlays the arms.
-        self.robot_dof_num = 29
+        self.robot_dof_num = self.dof_num
         self.policy_action_dim = 29
         self.controlled_action_dim = 15
         self.num_actions = self.policy_action_dim

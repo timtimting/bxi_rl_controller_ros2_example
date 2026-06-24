@@ -27,7 +27,7 @@ from scipy.spatial.transform import Rotation
 
 robot_name = "elf3"
 
-dof_num = 29
+model_dof_num = 29
 
 joint_name = (
     "waist_y_joint",
@@ -63,7 +63,20 @@ joint_name = (
     "r_wrist_x_joint",
     "r_wrist_y_joint",
     "r_wrist_z_joint",
+    "head_z_joint",
+    "head_y_joint",
     )   
+
+joint_table_dof_num = len(joint_name)
+tail_dof_num = joint_table_dof_num - model_dof_num
+tail_nominal_pos = np.array([0.0, 0.0], dtype=np.float32)
+tail_kp = np.array([20.0, 20.0], dtype=np.float32)
+tail_kd = np.array([1.0, 1.0], dtype=np.float32)
+
+if not (
+    tail_nominal_pos.shape[0] == tail_kp.shape[0] == tail_kd.shape[0] == tail_dof_num
+):
+    raise ValueError("tail默认关节数组长度必须等于joint_name长度 - model_dof_num")
 
 def quaternion_to_euler_array(quat):
     # Ensure quaternion is in the correct format [x, y, z, w]
@@ -118,6 +131,14 @@ class BxiExample(Node):
         self.topic_prefix = self.get_parameter('/topic_prefix').get_parameter_value().string_value
         print('topic_prefix:', self.topic_prefix)
 
+        self.declare_parameter('/dof_num', joint_table_dof_num)
+        self.dof_num = int(self.get_parameter('/dof_num').value)
+        if self.dof_num < model_dof_num or self.dof_num > joint_table_dof_num:
+            raise ValueError(
+                f"dof_num参数必须在{model_dof_num}到{joint_table_dof_num}之间"
+            )
+        self.joint_name = joint_name[: self.dof_num]
+        print('dof_num:', self.dof_num)
         
         self.declare_parameter('/onnx_file', 'default_value')
         self.onnx_file = self.get_parameter('/onnx_file').get_parameter_value().string_value        
@@ -145,7 +166,8 @@ class BxiExample(Node):
             metadata[prop.key] = prop.value
         # print(model.metadata_props)
         
-        self.num_action = dof_num
+        self.model_dof_num = model_dof_num
+        self.num_action = self.model_dof_num
         self.num_obs = 96
         
         print(metadata)
@@ -159,8 +181,8 @@ class BxiExample(Node):
 
         self.lock_in = Lock()
         self.lock_ou = self.lock_in #Lock()
-        self.qpos = np.zeros(self.num_action,dtype=np.double)
-        self.qvel = np.zeros(self.num_action,dtype=np.double)
+        self.qpos = np.zeros(self.dof_num,dtype=np.double)
+        self.qvel = np.zeros(self.dof_num,dtype=np.double)
         self.omega = np.zeros(3,dtype=np.double)
         self.quat = np.zeros(4,dtype=np.double)
         
@@ -251,27 +273,20 @@ class BxiExample(Node):
             soft_joint_kp = self.joint_stiffness * soft_start #* 0.2
             soft_joint_kd = self.joint_damping #* 0.2
                 
-            msg = bxiMsg.ActuatorCmds()
-            msg.header.frame_id = robot_name
-            msg.header.stamp = self.get_clock().now().to_msg()
-            msg.actuators_name = joint_name
-            msg.pos = self.default_joint_pos.tolist()
-            msg.vel = np.zeros(dof_num, dtype=np.float32).tolist()
-            msg.torque = np.zeros(dof_num, dtype=np.float32).tolist()
-            msg.kp = soft_joint_kp.tolist()
-            msg.kd = soft_joint_kd.tolist()
-            self.act_pub.publish(msg)
+            self.send_to_motor(self.default_joint_pos, soft_joint_kp, soft_joint_kd)
             
         elif self.step == 2:
             with self.lock_in:
-                q = self.qpos
-                dq = self.qvel
-                quat = self.quat
-                omega = self.omega
+                q = self.qpos.copy()
+                dq = self.qvel.copy()
+                quat = self.quat.copy()
+                omega = self.omega.copy()
                 
                 x_vel_cmd = self.vx
                 y_vel_cmd = self.vy
                 yaw_vel_cmd = self.dyaw
+            qj = q[:self.model_dof_num]
+            dqj = dq[:self.model_dof_num]
             
             # count_lowlevel = self.loop_count
                     
@@ -289,8 +304,8 @@ class BxiExample(Node):
 
             obs[0, :3] = omega
             obs[0, 3:6] = projected_gravity
-            obs[0, 6:6+self.num_action] = (q-self.default_joint_pos)
-            obs[0, 6+(self.num_action*1):6+(self.num_action*2)] = dq
+            obs[0, 6:6+self.num_action] = (qj-self.default_joint_pos)
+            obs[0, 6+(self.num_action*1):6+(self.num_action*2)] = dqj
             obs[0, 6+(self.num_action*2):6+(self.num_action*3)] = self.action
 
             obs[0, -3] = x_vel_cmd 
@@ -316,19 +331,50 @@ class BxiExample(Node):
             kp = self.joint_stiffness #* 0.9
             kd = self.joint_damping #* 0.2
             
-            msg = bxiMsg.ActuatorCmds()
-            msg.header.frame_id = robot_name
-            msg.header.stamp = self.get_clock().now().to_msg()
-            msg.actuators_name = joint_name
-            msg.pos = qpos.tolist()
-            msg.vel = np.zeros(dof_num, dtype=np.float32).tolist()
-            msg.torque = np.zeros(dof_num, dtype=np.float32).tolist()
-            msg.kp = kp.tolist()
-            msg.kd = kd.tolist()
-            self.act_pub.publish(msg)
+            self.send_to_motor(qpos, kp, kd)
             self.last_action=self.action.copy()
 
         self.loop_count += 1
+
+    def send_to_motor(self, dof_pos_target, joint_kp, joint_kd):
+        pos_fallback = np.concatenate((self.default_joint_pos, tail_nominal_pos))
+        kp_fallback = np.concatenate((self.joint_stiffness, tail_kp))
+        kd_fallback = np.concatenate((self.joint_damping, tail_kd))
+
+        msg = bxiMsg.ActuatorCmds()
+        msg.header.frame_id = robot_name
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.actuators_name = list(self.joint_name)
+        msg.pos = self.normalize_control_vector(
+            dof_pos_target, pos_fallback, "pos"
+        ).tolist()
+        msg.vel = np.zeros(self.dof_num, dtype=np.float32).tolist()
+        msg.torque = np.zeros(self.dof_num, dtype=np.float32).tolist()
+        msg.kp = self.normalize_control_vector(joint_kp, kp_fallback, "kp").tolist()
+        msg.kd = self.normalize_control_vector(joint_kd, kd_fallback, "kd").tolist()
+        self.act_pub.publish(msg)
+
+    def normalize_control_vector(self, values, fallback, field_name):
+        values = np.asarray(values, dtype=np.float32).reshape(-1)
+        fallback = np.asarray(fallback, dtype=np.float32).reshape(-1)
+
+        if values.shape[0] > self.dof_num:
+            raise ValueError(
+                f"{field_name} has {values.shape[0]} values, "
+                f"expected no more than {self.dof_num}"
+            )
+
+        full_values = fallback[: self.dof_num].copy()
+        full_values[: values.shape[0]] = values
+        return full_values
+
+    def copy_joint_state_vector(self, target, values, fallback):
+        values = np.asarray(values, dtype=target.dtype).reshape(-1)
+        fallback = np.asarray(fallback, dtype=target.dtype).reshape(-1)
+
+        target[:] = fallback[: target.shape[0]]
+        copy_num = min(values.shape[0], target.shape[0])
+        target[:copy_num] = values[:copy_num]
 
     def robot_reset(self, reset_step, release):
         req = bxiSrv.RobotReset.Request()
@@ -355,10 +401,10 @@ class BxiExample(Node):
         base_pose.orientation.w = 1.0        
 
         joint_state = JointState()
-        joint_state.name = joint_name
-        joint_state.position = np.zeros(dof_num, dtype=np.float32).tolist()
-        joint_state.velocity = np.zeros(dof_num, dtype=np.float32).tolist()
-        joint_state.effort = np.zeros(dof_num, dtype=np.float32).tolist()
+        joint_state.name = list(self.joint_name)
+        joint_state.position = np.zeros(self.dof_num, dtype=np.float32).tolist()
+        joint_state.velocity = np.zeros(self.dof_num, dtype=np.float32).tolist()
+        joint_state.effort = np.zeros(self.dof_num, dtype=np.float32).tolist()
         
         req.base_pose = base_pose
         req.joint_state = joint_state
@@ -374,8 +420,14 @@ class BxiExample(Node):
         joint_tor = msg.effort
         
         with self.lock_in:
-            self.qpos[:] = np.array(joint_pos[:])
-            self.qvel[:] = np.array(joint_vel[:])
+            self.copy_joint_state_vector(
+                self.qpos,
+                joint_pos,
+                np.concatenate((self.default_joint_pos, tail_nominal_pos)),
+            )
+            self.copy_joint_state_vector(
+                self.qvel, joint_vel, np.zeros(self.dof_num)
+            )
 
     def actuator_callback(self, msg):
         joint_pos = msg.position
@@ -385,8 +437,14 @@ class BxiExample(Node):
         motor_temperature = msg.motor_temperature
         
         with self.lock_in:
-            self.qpos[:] = np.array(joint_pos[:])
-            self.qvel[:] = np.array(joint_vel[:])
+            self.copy_joint_state_vector(
+                self.qpos,
+                joint_pos,
+                np.concatenate((self.default_joint_pos, tail_nominal_pos)),
+            )
+            self.copy_joint_state_vector(
+                self.qvel, joint_vel, np.zeros(self.dof_num)
+            )
 
     def joy_callback(self, msg):
         with self.lock_in:

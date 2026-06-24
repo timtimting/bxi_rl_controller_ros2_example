@@ -4,6 +4,8 @@ import fcntl
 import atexit
 from ament_index_python.packages import get_package_share_path
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 LOCK_FILE = "/tmp/bxi_example_hw.lock"
@@ -87,6 +89,11 @@ def generate_launch_description():
 
     return LaunchDescription(
         [
+            DeclareLaunchArgument(
+                "dof_num",
+                default_value="31",
+                description="控制节点最终发布/接收的关节数量",
+            ),
             Node(
                 package="hardware_elf3",
                 executable="hardware_elf3",
@@ -105,6 +112,7 @@ def generate_launch_description():
                 output="screen",
                 parameters=[
                     {"/topic_prefix": "hardware/"},
+                    {"/dof_num": LaunchConfiguration("dof_num")},
                     {"/state_machine_config": state_machine_config},
                     {"/hot_reload": False},
                 ],

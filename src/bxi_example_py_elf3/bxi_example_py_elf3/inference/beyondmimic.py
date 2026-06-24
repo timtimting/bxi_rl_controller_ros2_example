@@ -7,7 +7,7 @@ from bxi_example_py_elf3.utils.tfs import quaternion_to_rotation_matrix, quatern
 class DanceMotionPolicyMjlab:
     """舞蹈动作策略管理类"""
     
-    def __init__(self, motion_npz_path: str, model_onnx_path: str, start_frame: int = 0, fixed_pos: bool = False):
+    def __init__(self, motion_npz_path: str, model_onnx_path: str, start_frame: int = 0, fixed_pos: bool = False, dof_num: int = 29):
         """
         初始化舞蹈动作策略
         
@@ -41,7 +41,8 @@ class DanceMotionPolicyMjlab:
         
         self.timestep = self.start_frame
         
-        self.num_actions = len(self.joint_name)
+        self.dof_num = int(dof_num)
+        self.num_actions = self.dof_num
         
         self.obs = np.zeros(self.num_obs, dtype=np.float32)
         
@@ -202,7 +203,7 @@ class DanceMotionPolicyMjlab:
 class DanceMotionPolicyGravityMjlab:
     """舞蹈动作策略管理类"""
     
-    def __init__(self, motion_npz_path: str, model_onnx_path: str, start_frame: int = 0, fixed_pos: bool = False):
+    def __init__(self, motion_npz_path: str, model_onnx_path: str, start_frame: int = 0, fixed_pos: bool = False, dof_num: int = 29):
         """
         初始化舞蹈动作策略
         
@@ -237,7 +238,8 @@ class DanceMotionPolicyGravityMjlab:
         
         self.timestep = self.start_frame
         
-        self.num_actions = len(self.joint_name)
+        self.dof_num = int(dof_num)
+        self.num_actions = self.dof_num
         
         self.obs = np.zeros(self.num_obs, dtype=np.float32)
         
@@ -403,7 +405,7 @@ class DanceMotionPolicyGravityMjlab:
 class DanceMotionPolicyGravityIsaaclab:
     """舞蹈动作策略管理类"""
     
-    def __init__(self, motion_npz_path: str, model_onnx_path: str, start_frame: int = 0, fixed_pos: bool = False):
+    def __init__(self, motion_npz_path: str, model_onnx_path: str, start_frame: int = 0, fixed_pos: bool = False, dof_num: int = 29):
         """
         初始化舞蹈动作策略
         
@@ -523,7 +525,8 @@ class DanceMotionPolicyGravityIsaaclab:
         
         self.timestep = self.start_frame
         
-        self.num_actions = len(self.joint_name)
+        self.dof_num = int(dof_num)
+        self.num_actions = self.dof_num
         
         self.obs = np.zeros(self.num_obs, dtype=np.float32)
         
@@ -690,7 +693,7 @@ class DanceMotionPolicyGravityIsaaclab:
 class DanceMotionPolicyGravityIsaaclabV2:
     """适配 reference residual action + command window + 10帧历史的 IsaacLab ONNX 部署类。"""
 
-    def __init__(self, motion_npz_path: str, model_onnx_path: str, start_frame: int = 0, fixed_pos: bool = False):
+    def __init__(self, motion_npz_path: str, model_onnx_path: str, start_frame: int = 0, fixed_pos: bool = False, dof_num: int = 29):
         self.kps = np.array([
             108.448,162.672,176.421,
             176.421,176.421,54.224,176.421,33.493,21.771,
@@ -727,7 +730,8 @@ class DanceMotionPolicyGravityIsaaclabV2:
         self.start_frame = start_frame
         self.end_frame = self.motioninputpos.shape[0] - 1
         self.timestep = self.start_frame
-        self.num_actions = len(self.joint_name)
+        self.dof_num = int(dof_num)
+        self.num_actions = self.dof_num
 
         self.action_buffer = np.zeros((self.num_actions,), dtype=np.float32)
         self.history_buffers = {}
@@ -889,7 +893,7 @@ class DanceMotionPolicyGravityIsaaclabV2:
 class DanceMotionPolicyGravityIsaaclabV3:
     """适配 default_joint_pos residual action + command window + 10帧历史的 IsaacLab ONNX 部署类。"""
 
-    def __init__(self, motion_npz_path: str, model_onnx_path: str, start_frame: int = 0, fixed_pos: bool = False):
+    def __init__(self, motion_npz_path: str, model_onnx_path: str, start_frame: int = 0, fixed_pos: bool = False, dof_num: int = 29):
         self.kps = np.array([
             108.448,162.672,176.421,
             176.421,176.421,54.224,176.421,33.493,21.771,
@@ -926,7 +930,8 @@ class DanceMotionPolicyGravityIsaaclabV3:
         self.start_frame = start_frame
         self.end_frame = self.motioninputpos.shape[0] - 1
         self.timestep = self.start_frame
-        self.num_actions = len(self.joint_name)
+        self.dof_num = int(dof_num)
+        self.num_actions = self.dof_num
 
         self.action_buffer = np.zeros((self.num_actions,), dtype=np.float32)
         self.history_buffers = {}
