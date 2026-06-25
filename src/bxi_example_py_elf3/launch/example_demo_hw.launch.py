@@ -95,9 +95,9 @@ def generate_launch_description():
                 description="控制节点最终发布/接收的关节数量",
             ),
             Node(
-                package="hardware_elf3",
-                executable="hardware_elf3",
-                name="hardware_elf3",
+                package="hardware_elf3_head",
+                executable="hardware_elf3_head",
+                name="hardware_elf3_head",
                 output="screen",
                 parameters=[
                 ],
