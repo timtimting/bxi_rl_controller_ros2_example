@@ -407,7 +407,8 @@ class ZeroTorqueState(RobotControlState):
             ctx.joint_nominal_pos,
             np.zeros(ctx.dof_num, dtype=np.float32),
             np.zeros(ctx.dof_num, dtype=np.float32),
-        )1
+        )
+        return frame
 
 
 class PdBrakeState(RobotControlState):
@@ -611,6 +612,7 @@ class DanceState(RobotControlState):
         if self.playing and not on_translation:
             self._ble_frame_trigger.write_for_timestep(ctx, ctx.dance.timestep)
 
+        q, dq = ctx.get_model_joint_state(ctx.dance)
         qpos = ctx.dance.inference_step(
             q,
             dq,
@@ -977,9 +979,10 @@ class DancePlaylistState(RobotControlState):
                 self._current_ble_trigger_frames(),
             )
 
+        q, dq = ctx.get_model_joint_state(policy)
         qpos = policy.inference_step(
-            ctx.current_q,
-            ctx.current_dq,
+            q,
+            dq,
             ctx.current_quat_wxyz,
             ctx.current_omega,
         )
