@@ -92,7 +92,7 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "dof_num",
                 default_value="31",
-                description="控制节点最终发布/接收的关节数量",
+                description="兼容旧参数；bxi_example_py_elf3_demo内部固定使用31自由度",
             ),
             Node(
                 package="hardware_elf3_head",

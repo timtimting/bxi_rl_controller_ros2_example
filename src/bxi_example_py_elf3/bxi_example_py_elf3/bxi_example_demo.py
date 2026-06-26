@@ -211,10 +211,12 @@ class BxiExample(HotReloadMixin, Node):
         )
 
         self.declare_parameter("/dof_num", joint_table_dof_num)
-        self.dof_num = int(self.get_parameter("/dof_num").value)
-        if self.dof_num < model_dof_num or self.dof_num > joint_table_dof_num:
-            raise ValueError(
-                f"dof_num参数必须在{model_dof_num}到{joint_table_dof_num}之间"
+        requested_dof_num = int(self.get_parameter("/dof_num").value)
+        self.dof_num = joint_table_dof_num
+        if requested_dof_num != self.dof_num:
+            self.get_logger().warning(
+                f"dof_num is fixed to {self.dof_num} for 31-DoF control; "
+                f"ignore requested value {requested_dof_num}"
             )
 
         self.joint_name = joint_name[: self.dof_num]
@@ -316,7 +318,11 @@ class BxiExample(HotReloadMixin, Node):
             dof_num=model_dof_num,
         )
         self.model_file_paths: tuple[str, ...] = tuple(model_file_paths)
-        self.pd_pos: np.ndarray = self.normal.default_dof_pos
+        self.pd_pos: np.ndarray = self.normalize_control_vector(
+            self.normal.default_dof_pos,
+            self.joint_nominal_pos,
+            "pd_pos",
+        )
 
     def bind_robot_states(self, robot_states):
         for state in robot_states.values():
@@ -619,13 +625,22 @@ class BxiExample(HotReloadMixin, Node):
         target[:copy_num] = values[:copy_num]
 
     def get_model_dof_num(self, model):
-        return int(
+        model_dof = int(
             getattr(
                 model,
                 "dof_num",
-                getattr(model, "num_actions", getattr(model, "num_action", model_dof_num)),
+                getattr(
+                    model,
+                    "num_actions",
+                    getattr(model, "num_action", model_dof_num),
+                ),
             )
         )
+        if model_dof < 1 or model_dof > self.dof_num:
+            raise ValueError(
+                f"invalid model dof_num {model_dof}; control dof_num is {self.dof_num}"
+            )
+        return model_dof
 
     def get_model_joint_state(self, model):
         model_dof = self.get_model_dof_num(model)

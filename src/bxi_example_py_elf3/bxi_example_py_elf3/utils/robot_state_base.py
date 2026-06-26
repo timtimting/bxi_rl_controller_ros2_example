@@ -15,6 +15,7 @@ MotorFrame = Tuple[np.ndarray, np.ndarray, np.ndarray]
 class RobotControlState(StateBehavior[BxiExample]):
     def __init__(self, name: str, state_id: int):
         super().__init__(name, state_id)
+        self._ctx: Optional[BxiExample] = None
         self._prepared_first_frame: Optional[MotorFrame] = None
         self._entered_during_transition = False
         self.speed_profile_name: Optional[str] = None
@@ -23,6 +24,7 @@ class RobotControlState(StateBehavior[BxiExample]):
 
     def on_bind(self, ctx: BxiExample) -> None:
         """Called once after the state is created and before the state machine starts."""
+        self._ctx = ctx
 
     def on_exit(self, ctx: BxiExample) -> None:
         ctx.pos_last_state = ctx.qpos.copy()
@@ -350,11 +352,57 @@ class RobotControlState(StateBehavior[BxiExample]):
         return current_array.copy()
 
     def _motor_frame(self, qpos, kp, kd) -> MotorFrame:
-        return (
+        frame = (
             np.asarray(qpos, dtype=np.float32).copy(),
             np.asarray(kp, dtype=np.float32).copy(),
             np.asarray(kd, dtype=np.float32).copy(),
         )
+        normalizer = getattr(self._ctx, "normalize_motor_frame", None)
+        if callable(normalizer):
+            return normalizer(*frame)
+        return frame
+
+    def _motor_frame_with_head(
+        self,
+        qpos,
+        kp,
+        kd,
+        head_pos,
+        head_kp=20.0,
+        head_kd=1.0,
+    ) -> MotorFrame:
+        frame = self._motor_frame(qpos, kp, kd)
+        return self._apply_head_target(frame, head_pos, head_kp, head_kd)
+
+    def _apply_head_target(
+        self,
+        frame: MotorFrame,
+        head_pos,
+        head_kp=20.0,
+        head_kd=1.0,
+    ) -> MotorFrame:
+        qpos, kp, kd = frame
+        head_pos = np.asarray(head_pos, dtype=np.float32).reshape(-1)
+        head_kp = np.asarray(head_kp, dtype=np.float32).reshape(-1)
+        head_kd = np.asarray(head_kd, dtype=np.float32).reshape(-1)
+
+        if head_pos.shape[0] != 2:
+            raise ValueError(f"head_pos must have 2 values, got {head_pos.shape[0]}")
+        if head_kp.shape[0] == 1:
+            head_kp = np.repeat(head_kp, 2)
+        if head_kd.shape[0] == 1:
+            head_kd = np.repeat(head_kd, 2)
+        if head_kp.shape[0] != 2:
+            raise ValueError(f"head_kp must have 1 or 2 values, got {head_kp.shape[0]}")
+        if head_kd.shape[0] != 2:
+            raise ValueError(f"head_kd must have 1 or 2 values, got {head_kd.shape[0]}")
+        if qpos.shape[0] < 31 or kp.shape[0] < 31 or kd.shape[0] < 31:
+            raise ValueError("head control requires a normalized 31-DoF motor frame")
+
+        qpos[29:31] = head_pos
+        kp[29:31] = head_kp
+        kd[29:31] = head_kd
+        return qpos, kp, kd
 
     def _ctx_motor_frame(self, ctx: BxiExample, frame: MotorFrame) -> MotorFrame:
         normalizer = getattr(ctx, "normalize_motor_frame", None)
