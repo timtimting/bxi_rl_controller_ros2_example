@@ -4,6 +4,8 @@ import fcntl
 import atexit
 from ament_index_python.packages import get_package_share_path
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 LOCK_FILE = "/tmp/bxi_example_hw.lock"
@@ -87,10 +89,15 @@ def generate_launch_description():
 
     return LaunchDescription(
         [
+            DeclareLaunchArgument(
+                "dof_num",
+                default_value="31",
+                description="兼容旧参数；bxi_example_py_elf3_demo内部固定使用31自由度",
+            ),
             Node(
-                package="hardware_elf3",
-                executable="hardware_elf3",
-                name="hardware_elf3",
+                package="hardware_elf3_head",
+                executable="hardware_elf3_head",
+                name="hardware_elf3_head",
                 output="screen",
                 parameters=[
                 ],
@@ -105,6 +112,7 @@ def generate_launch_description():
                 output="screen",
                 parameters=[
                     {"/topic_prefix": "hardware/"},
+                    {"/dof_num": LaunchConfiguration("dof_num")},
                     {"/state_machine_config": state_machine_config},
                     {"/hot_reload": False},
                 ],

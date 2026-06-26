@@ -347,6 +347,9 @@ class NormalState(RobotControlState):
             cmd_vel=self.get_cmd_vel(ctx),
         )
 
+    def on_enter(self, ctx: BxiExample) -> None:
+        self.shaketime = 0
+
     def get_first_frame(self, ctx: BxiExample) -> Optional[MotorFrame]:
         return self._motor_frame(
             ctx.normal.target_dof_pos, ctx.normal.kps, ctx.normal.kds
@@ -355,15 +358,28 @@ class NormalState(RobotControlState):
     def get_motor_frame(
         self, ctx: BxiExample, dt: float, on_translation: bool
     ) -> Optional[MotorFrame]:
+        if self.shaketime < 50:
+            self.kp = self.shaketime / 50 * ctx.withoutarm.kps
         cmd_vel = self.get_cmd_vel(ctx)
+        q, dq = ctx.get_model_joint_state(ctx.normal)
         qpos, vel = ctx.normal.inference_step(
-            ctx.current_q,
-            ctx.current_dq,
+            q,
+            dq,
             ctx.current_quat_wxyz,
             ctx.current_omega,
             cmd_vel,
         )
-        return self._motor_frame(qpos, ctx.normal.kps, ctx.normal.kds)
+        frame = self._motor_frame(qpos, ctx.normal.kps, ctx.normal.kds)
+        frame[0][29] = math.sin(self.shaketime / 10) * 0.2   # head_z_joint 位置
+        frame[0][30] = math.sin(self.shaketime / 5) * 0.2   # head_y_joint 位置
+
+        frame[1][29] = 20.0  # head_z_joint kp
+        frame[1][30] = 20.0  # head_y_joint kp
+
+        frame[2][29] = 1.0   # head_z_joint kd
+        frame[2][30] = 1.0 
+        self.shaketime += 1
+        return frame
 
     def on_update(self, ctx: BxiExample, dt: float) -> None:
         if ctx.is_orientation_unsafe(ctx.current_quat_xyzw):
@@ -387,7 +403,7 @@ class ZeroTorqueState(RobotControlState):
     def get_motor_frame(
         self, ctx: BxiExample, dt: float, on_translation: bool
     ) -> Optional[MotorFrame]:
-        return self._motor_frame(
+        frame = self._motor_frame(
             ctx.joint_nominal_pos,
             np.zeros(ctx.dof_num, dtype=np.float32),
             np.zeros(ctx.dof_num, dtype=np.float32),
@@ -401,7 +417,8 @@ class PdBrakeState(RobotControlState):
     def get_motor_frame(
         self, ctx: BxiExample, dt: float, on_translation: bool
     ) -> Optional[MotorFrame]:
-        return self._motor_frame(ctx.pd_pos, ctx.normal.kps, ctx.normal.kds)
+        frame = self._motor_frame(ctx.pd_pos, ctx.normal.kps, ctx.normal.kds)
+        return frame
 
 
 class InitialPosState(RobotControlState):
@@ -411,7 +428,8 @@ class InitialPosState(RobotControlState):
     def get_motor_frame(
         self, ctx: BxiExample, dt: float, on_translation: bool
     ) -> Optional[MotorFrame]:
-        return self._motor_frame(ctx.initial_pos, ctx.joint_kp, ctx.joint_kd)
+        frame = self._motor_frame(ctx.initial_pos, ctx.joint_kp, ctx.joint_kd)
+        return frame
 
 
 class DanceState(RobotControlState):
@@ -594,8 +612,8 @@ class DanceState(RobotControlState):
             self._ble_frame_trigger.write_for_timestep(ctx, ctx.dance.timestep)
 
         qpos = ctx.dance.inference_step(
-            ctx.current_q,
-            ctx.current_dq,
+            q,
+            dq,
             ctx.current_quat_wxyz,
             ctx.current_omega,
         )
@@ -603,11 +621,12 @@ class DanceState(RobotControlState):
         if self.playing:
             ctx.dance.timestep += 50 * dt  # 模型动画是50hz播放的，dt是推理间隔
 
-        return self._motor_frame(
+        frame = self._motor_frame(
             qpos,
             ctx.dance.kps,
             ctx.dance.kds,
         )
+        return frame
 
     def on_update(self, ctx: BxiExample, dt: float) -> None:
         if (
@@ -1051,10 +1070,11 @@ class MotionState(RobotControlState):
         self, ctx: BxiExample, dt: float, on_translation: bool
     ) -> Optional[MotorFrame]:
         policy = self._policy(ctx)
+        q, dq = ctx.get_model_joint_state(policy)
 
         qpos = policy.inference_step(
-            ctx.current_q,
-            ctx.current_dq,
+            q,
+            dq,
             ctx.current_quat_wxyz,
             ctx.current_omega,
         )
@@ -1062,7 +1082,8 @@ class MotionState(RobotControlState):
         if self.playing and not on_translation:
             policy.timestep += 50 * dt  # 模型动画是50hz播放的，dt是推理间隔
 
-        return self._motor_frame(qpos, policy.kps, policy.kds)
+        frame = self._motor_frame(qpos, policy.kps, policy.kds)
+        return frame
 
     def on_update(self, ctx: BxiExample, dt: float) -> None:
         policy = self._policy(ctx)
@@ -1161,9 +1182,10 @@ class HandPlayBackState(RobotControlState):
 
     def get_motor_frame(self, ctx, dt, on_translation):
         cmd_vel = self.get_cmd_vel(ctx)
+        q, dq = ctx.get_model_joint_state(ctx.withoutarm)
         qpos, vel = ctx.withoutarm.inference_step(
-            ctx.current_q,
-            ctx.current_dq,
+            q,
+            dq,
             ctx.current_quat_wxyz,
             ctx.current_omega,
             cmd_vel,
@@ -1174,7 +1196,8 @@ class HandPlayBackState(RobotControlState):
             qpos[-14:] = self.applause_data[-1]
         if self.playing and not on_translation:
             self.frame += self.fps * dt
-        return self._motor_frame(qpos, ctx.withoutarm.kps, ctx.withoutarm.kds)
+        frame = self._motor_frame(qpos, ctx.withoutarm.kps, ctx.withoutarm.kds)
+        return frame
 
     def on_update(self, ctx: BxiExample, dt: float) -> None:
         if ctx.is_orientation_unsafe(ctx.current_quat_xyzw):
@@ -1242,9 +1265,10 @@ class HelloState(RobotControlState):
         if self.shaketime < 50:
             self.kp = self.shaketime / 50 * ctx.withoutarm.kps
         cmd_vel = self.get_cmd_vel(ctx)
+        q, dq = ctx.get_model_joint_state(ctx.withoutarm)
         qpos, vel = ctx.withoutarm.inference_step(
-            ctx.current_q,
-            ctx.current_dq,
+            q,
+            dq,
             ctx.current_quat_wxyz,
             ctx.current_omega,
             cmd_vel,
@@ -1254,7 +1278,8 @@ class HelloState(RobotControlState):
         qpos[25] = -0.3
         if self.playing:
             self.shaketime += 1
-        return self._motor_frame(qpos, self.kp, ctx.withoutarm.kds)
+        frame = self._motor_frame(qpos, self.kp, ctx.withoutarm.kds)
+        return frame
 
     def on_update(self, ctx: BxiExample, dt: float) -> None:
         if ctx.is_orientation_unsafe(ctx.current_quat_xyzw):
@@ -1316,9 +1341,10 @@ class AmpRunState(RobotControlState):
         self, ctx: BxiExample, dt: float, on_translation: bool
     ) -> Optional[MotorFrame]:
         cmd_vel = self.get_cmd_vel(ctx)
+        q, dq = ctx.get_model_joint_state(ctx.amp_run)
         qpos, vel = ctx.amp_run.inference_step(
-            ctx.current_q,
-            ctx.current_dq,
+            q,
+            dq,
             ctx.current_quat_wxyz,
             ctx.current_omega,
             cmd_vel,
@@ -1331,7 +1357,8 @@ class AmpRunState(RobotControlState):
             ctx.loop_count = int(0.3 / ctx.dt)
             self.max_vel = 0.0
 
-        return self._motor_frame(qpos, ctx.amp_run.kps, ctx.amp_run.kds)
+        frame = self._motor_frame(qpos, ctx.amp_run.kps, ctx.amp_run.kds)
+        return frame
 
     def on_update(self, ctx: BxiExample, dt: float) -> None:
         if ctx.is_orientation_unsafe(ctx.current_quat_xyzw):
@@ -1376,18 +1403,20 @@ class NormalRunState(RobotControlState):
         self, ctx: BxiExample, dt: float, on_translation: bool
     ) -> Optional[MotorFrame]:
         cmd_vel = self.get_cmd_vel(ctx)
+        q, dq = ctx.get_model_joint_state(ctx.normal_run)
         qpos = ctx.normal_run.infer_step(
-            ctx.current_q,
-            ctx.current_dq,
+            q,
+            dq,
             ctx.current_quat_xyzw,
             ctx.current_omega,
             cmd_vel,
         )
-        return self._motor_frame(
+        frame = self._motor_frame(
             qpos,
             ctx.normal_run.joint_stiffness,
             ctx.normal_run.joint_damping,
         )
+        return frame
 
     def on_update(self, ctx: BxiExample, dt: float) -> None:
         if ctx.is_orientation_unsafe(ctx.current_quat_xyzw):

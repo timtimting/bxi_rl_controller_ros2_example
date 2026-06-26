@@ -205,6 +205,7 @@ system:
     - "su bxi -c \"cd /home/bxi/bxi_ws/bxi_voice && ./bin/bxi-voice\" 2>&1 &"
   stop:
     - "killall -SIGINT hardware_elf3"
+    - "killall -SIGINT hardware_elf3_head"
     - "killall -SIGINT bxi_example_py_elf3"
     - "killall -SIGINT bxi_example_py_elf3_demo"
     - "killall -SIGINT bxi_bms"

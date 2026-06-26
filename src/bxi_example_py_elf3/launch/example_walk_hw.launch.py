@@ -12,6 +12,11 @@ def generate_launch_description():
 
     return LaunchDescription(
         [
+            DeclareLaunchArgument(
+                "dof_num",
+                default_value="31",
+                description="控制节点最终发布/接收的关节数量",
+            ),
             Node(
                 package="hardware_elf3",
                 executable="hardware_elf3",
@@ -30,6 +35,7 @@ def generate_launch_description():
                 output="screen",
                 parameters=[
                     {"/topic_prefix": "hardware/"},
+                    {"/dof_num": LaunchConfiguration("dof_num")},
                     {"/onnx_file": onnx_file},
                 ],
                 emulate_tty=True,

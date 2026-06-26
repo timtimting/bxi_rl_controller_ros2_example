@@ -1,6 +1,8 @@
 import os
 from ament_index_python.packages import get_package_share_path
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 def generate_launch_description():
@@ -14,6 +16,11 @@ def generate_launch_description():
 
     return LaunchDescription(
         [
+            DeclareLaunchArgument(
+                "dof_num",
+                default_value="31",
+                description="兼容旧参数；bxi_example_py_elf3_demo内部固定使用31自由度",
+            ),
             Node(
                 package="mujoco",
                 executable="simulation",
@@ -33,6 +40,7 @@ def generate_launch_description():
                 output="screen",
                 parameters=[
                     {"/topic_prefix": "simulation/"},
+                    {"/dof_num": LaunchConfiguration("dof_num")},
                     {"/state_machine_config": state_machine_config},
                     {"/hot_reload": True},
                 ],

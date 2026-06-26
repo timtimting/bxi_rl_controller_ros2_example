@@ -37,7 +37,7 @@ from bxi_example_py_elf3.utils.tfs import quaternion_to_euler_array
 
 robot_name = "elf3"
 
-dof_num = 29
+model_dof_num = 29
 
 joint_name = (
     "waist_y_joint",
@@ -69,14 +69,19 @@ joint_name = (
     "r_wrist_x_joint",
     "r_wrist_y_joint",
     "r_wrist_z_joint",
+    "head_z_joint",
+    "head_y_joint",
 )
+
+joint_table_dof_num = len(joint_name)
 
 joint_nominal_pos = np.array([   # 指定的固定关节角度
     0.0, 0.0, 0.0,
     -0.4,0.0,0.0,0.8,-0.4,0.0,
     -0.4,0.0,0.0,0.8,-0.4,0.0,
     0.5, 0.3,-0.1,-0.2, 0.0,0.0,0.0,     # 左臂放在大腿旁边 (Y=0 肩平, X=0 前后居中, Z=0 不旋转, 肘关节微弯)
-    0.5,-0.3, 0.1,-0.2, 0.0,0.0,0.0],    # 右臂放在大腿旁边 (Y=0 肩平, X=0 前后居中, Z=0 不旋转, 肘关节微弯)
+    0.5,-0.3, 0.1,-0.2, 0.0,0.0,0.0,     # 右臂放在大腿旁边 (Y=0 肩平, X=0 前后居中, Z=0 不旋转, 肘关节微弯)
+    0.0,0.0],                             # 头部零位
     dtype=np.float32)
 
 joint_kp = np.array([     # 指定关节的kp，和joint_name顺序一一对应
@@ -84,7 +89,8 @@ joint_kp = np.array([     # 指定关节的kp，和joint_name顺序一一对应
     300,100,100,300,50,50,
     300,100,100,300,50,50,
     100,80,80,100, 20,20,20,
-    100,80,80,100, 20,20,20],
+    100,80,80,100, 20,20,20,
+    20,20],
     dtype=np.float32)
 
 joint_kd = np.array([  # 指定关节的kd，和joint_name顺序一一对应
@@ -92,7 +98,8 @@ joint_kd = np.array([  # 指定关节的kd，和joint_name顺序一一对应
     2.5,2,2,2.5,2,2,
     2.5,2,2,2.5,2,2,
     2.5,2,2,2.5, 1,1,1,
-    2.5,2,2,2.5, 1,1,1],
+    2.5,2,2,2.5, 1,1,1,
+    1,1],
     dtype=np.float32)
 
 class BxiExample(HotReloadMixin, Node):
@@ -107,36 +114,32 @@ class BxiExample(HotReloadMixin, Node):
         # 加载模型
         self.load_models()
 
-        self.initial_pos = np.zeros(dof_num, dtype=np.double)
+        self.initial_pos = np.zeros(self.dof_num, dtype=np.double)
 
         # 订阅发布ros主题
         self.init_pub_sub()
 
         # 机器人状态变量(robot states)
-        self.qpos = np.zeros(dof_num, dtype=np.double)
-        self.qvel = np.zeros(dof_num, dtype=np.double)
+        self.qpos = np.zeros(self.dof_num, dtype=np.double)
+        self.qvel = np.zeros(self.dof_num, dtype=np.double)
         self.omega = np.zeros(3, dtype=np.double)
         self.quat_xyzw = np.zeros(4, dtype=np.double)
         self.quat_wxyz = np.zeros(4, dtype=np.double)
 
-        self.pos_last = np.zeros(dof_num, dtype=np.float32)
-        self.kp_last = np.zeros(dof_num, dtype=np.float32)
-        self.kd_last = np.zeros(dof_num, dtype=np.float32)
-        self.pos_last_state = np.zeros(dof_num, dtype=np.float32)
-        self.kp_last_state = np.zeros(dof_num, dtype=np.float32)
-        self.kd_last_state = np.zeros(dof_num, dtype=np.float32)
+        self.pos_last = np.zeros(self.dof_num, dtype=np.float32)
+        self.kp_last = np.zeros(self.dof_num, dtype=np.float32)
+        self.kd_last = np.zeros(self.dof_num, dtype=np.float32)
+        self.pos_last_state = np.zeros(self.dof_num, dtype=np.float32)
+        self.kp_last_state = np.zeros(self.dof_num, dtype=np.float32)
+        self.kd_last_state = np.zeros(self.dof_num, dtype=np.float32)
 
         # 状态切换参数
-        self.dof_num = dof_num
-        self.joint_nominal_pos = joint_nominal_pos
-        self.joint_kp = joint_kp
-        self.joint_kd = joint_kd
         self.loop_count = 0
         self.motor_target = None
         self.speed_profiles = self.state_machine_config.get("speed_profiles", {})
         self.pending_remote_events = deque()
-        self.current_q = np.zeros(dof_num, dtype=np.double)
-        self.current_dq = np.zeros(dof_num, dtype=np.double)
+        self.current_q = np.zeros(self.dof_num, dtype=np.double)
+        self.current_dq = np.zeros(self.dof_num, dtype=np.double)
         self.current_omega = np.zeros(3, dtype=np.double)
         self.current_quat_xyzw = np.zeros(4, dtype=np.double)
         self.current_quat_wxyz = np.zeros(4, dtype=np.double)
@@ -183,6 +186,20 @@ class BxiExample(HotReloadMixin, Node):
             self.get_parameter("/topic_prefix").get_parameter_value().string_value
         )
 
+        self.declare_parameter("/dof_num", joint_table_dof_num)
+        requested_dof_num = int(self.get_parameter("/dof_num").value)
+        self.dof_num = joint_table_dof_num
+        if requested_dof_num != self.dof_num:
+            self.get_logger().warning(
+                f"dof_num is fixed to {self.dof_num} for 31-DoF control; "
+                f"ignore requested value {requested_dof_num}"
+            )
+
+        self.joint_name = joint_name[: self.dof_num]
+        self.joint_nominal_pos = joint_nominal_pos[: self.dof_num]
+        self.joint_kp = joint_kp[: self.dof_num]
+        self.joint_kd = joint_kd[: self.dof_num]
+
         package_share = get_package_share_directory("bxi_example_py_elf3")
         self.declare_parameter(
             "/state_machine_config",
@@ -227,25 +244,30 @@ class BxiExample(HotReloadMixin, Node):
             return path
 
         self.normal: HumanoidGaitPolicyLiteIsaaclab = HumanoidGaitPolicyLiteIsaaclab(
-            model_file("isaaclab_model/amp_terrain.onnx")
+            model_file("isaaclab_model/amp_terrain.onnx"),
+            dof_num=model_dof_num,
         )
         self.dance: DanceMotionPolicyGravityIsaaclabV2 = DanceMotionPolicyGravityIsaaclabV2(
             model_file("isaaclab_model/change_face_fine.npz"),
             model_file("isaaclab_model/change_face_fine.onnx"),
             start_frame=60,
-            fixed_pos=True
+            fixed_pos=True,
+            dof_num=model_dof_num,
         )
         self.amp_run: HumanoidGaitPolicyLiteIsaaclab = HumanoidGaitPolicyLiteIsaaclab(
-            model_file("isaaclab_model/amp_run.onnx")
+            model_file("isaaclab_model/amp_run.onnx"),
+            dof_num=model_dof_num,
         )
         self.normal_run: NormalMotionPolicyMjlab = NormalMotionPolicyMjlab(
-            model_file("mjlab_model/model_normal.onnx")
+            model_file("mjlab_model/model_normal.onnx"),
+            dof_num=model_dof_num,
         )
         self.back_flip: DanceMotionPolicyGravityIsaaclab = (
             DanceMotionPolicyGravityIsaaclab(
                 model_file("isaaclab_model/back_flip.npz"),
                 model_file("isaaclab_model/back_flip.onnx"),
                 start_frame=40,
+                dof_num=model_dof_num,
             )
         )
         self.forward_flip: DanceMotionPolicyGravityIsaaclab = (
@@ -253,10 +275,12 @@ class BxiExample(HotReloadMixin, Node):
                 model_file("isaaclab_model/forward_flip.npz"),
                 model_file("isaaclab_model/forward_flip.onnx"),
                 start_frame=150,
+                dof_num=model_dof_num,
             )
         )
         self.withoutarm: HumanoidGaitPolicyLiteIsaaclab = HumanoidGaitPolicyLiteIsaaclab(
-            model_file("isaaclab_model/withoutarm.onnx")
+            model_file("isaaclab_model/withoutarm.onnx"),
+            dof_num=model_dof_num,
         )
         self.load_configured_dance_models(model_file)
         self.model_file_paths: tuple[str, ...] = tuple(model_file_paths)
@@ -430,13 +454,19 @@ class BxiExample(HotReloadMixin, Node):
         self.publish_state_machine_info_if_due(events)
 
     def send_to_motor(self, dof_pos_target, joint_kp, joint_kd):
+        dof_pos_target = self.normalize_control_vector(
+            dof_pos_target, self.joint_nominal_pos, "pos"
+        )
+        joint_kp = self.normalize_control_vector(joint_kp, self.joint_kp, "kp")
+        joint_kd = self.normalize_control_vector(joint_kd, self.joint_kd, "kd")
+
         msg = bxiMsg.ActuatorCmds()
         msg.header.frame_id = robot_name
         msg.header.stamp = self.get_clock().now().to_msg()
-        msg.actuators_name = joint_name
+        msg.actuators_name = list(self.joint_name)
         msg.pos = dof_pos_target.tolist()
-        msg.vel = np.zeros(dof_num, dtype=np.float32).tolist()
-        msg.torque = np.zeros(dof_num, dtype=np.float32).tolist()
+        msg.vel = np.zeros(self.dof_num, dtype=np.float32).tolist()
+        msg.torque = np.zeros(self.dof_num, dtype=np.float32).tolist()
         msg.kp = joint_kp.tolist()
         msg.kd = joint_kd.tolist()
         self.act_pub.publish(msg)
@@ -503,10 +533,10 @@ class BxiExample(HotReloadMixin, Node):
         base_pose.orientation.w = 1.0
 
         joint_state = JointState()
-        joint_state.name = joint_name
-        joint_state.position = np.zeros(dof_num, dtype=np.float32).tolist()
-        joint_state.velocity = np.zeros(dof_num, dtype=np.float32).tolist()
-        joint_state.effort = np.zeros(dof_num, dtype=np.float32).tolist()
+        joint_state.name = list(self.joint_name)
+        joint_state.position = np.zeros(self.dof_num, dtype=np.float32).tolist()
+        joint_state.velocity = np.zeros(self.dof_num, dtype=np.float32).tolist()
+        joint_state.effort = np.zeros(self.dof_num, dtype=np.float32).tolist()
 
         req.base_pose = base_pose
         req.joint_state = joint_state
@@ -522,8 +552,10 @@ class BxiExample(HotReloadMixin, Node):
         joint_tor = msg.effort
 
         with self.lock_in:
-            self.qpos[:] = np.array(joint_pos[:])
-            self.qvel[:] = np.array(joint_vel[:])
+            self.copy_joint_state_vector(self.qpos, joint_pos, self.joint_nominal_pos)
+            self.copy_joint_state_vector(
+                self.qvel, joint_vel, np.zeros(self.dof_num)
+            )
 
     def actuator_callback(self, msg):
         joint_pos = msg.position
@@ -533,8 +565,10 @@ class BxiExample(HotReloadMixin, Node):
         motor_temperature = msg.motor_temperature
 
         with self.lock_in:
-            self.qpos[:] = np.array(joint_pos[:])
-            self.qvel[:] = np.array(joint_vel[:])
+            self.copy_joint_state_vector(self.qpos, joint_pos, self.joint_nominal_pos)
+            self.copy_joint_state_vector(
+                self.qvel, joint_vel, np.zeros(self.dof_num)
+            )
 
     def joy_callback(self, msg):
         with self.lock_in:
@@ -576,12 +610,64 @@ class BxiExample(HotReloadMixin, Node):
     #                                     工具类函数                                    #
     # ---------------------------------------------------------------------------- #
     def set_motor_target(self, qpos, kp, kd):
-        frame = (
-            np.asarray(qpos, dtype=np.float32).copy(),
-            np.asarray(kp, dtype=np.float32).copy(),
-            np.asarray(kd, dtype=np.float32).copy(),
+        self.motor_target = self.normalize_motor_frame(qpos, kp, kd)
+
+    def normalize_motor_frame(self, qpos, kp, kd):
+        return (
+            self.normalize_control_vector(qpos, self.joint_nominal_pos, "pos"),
+            self.normalize_control_vector(kp, self.joint_kp, "kp"),
+            self.normalize_control_vector(kd, self.joint_kd, "kd"),
         )
-        self.motor_target = frame
+
+    def normalize_control_vector(self, values, fallback, field_name):
+        """返回当前后端dof_num长度；模型短输出会用零位/默认PD补齐尾部关节。"""
+        values = np.asarray(values, dtype=np.float32).reshape(-1)
+        fallback = np.asarray(fallback, dtype=np.float32).reshape(-1)
+
+        if values.shape[0] > self.dof_num:
+            raise ValueError(
+                f"{field_name} has {values.shape[0]} values, "
+                f"expected no more than {self.dof_num}"
+            )
+
+        full_values = fallback[: self.dof_num].copy()
+        full_values[: values.shape[0]] = values
+        return full_values
+
+    def copy_joint_state_vector(self, target, values, fallback):
+        """把反馈状态写入固定长度缓存；31维反馈全量写入，短反馈补默认值。"""
+        values = np.asarray(values, dtype=target.dtype).reshape(-1)
+        fallback = np.asarray(fallback, dtype=target.dtype).reshape(-1)
+
+        target[:] = fallback[: target.shape[0]]
+        copy_num = min(values.shape[0], target.shape[0])
+        target[:copy_num] = values[:copy_num]
+
+    def get_model_dof_num(self, model):
+        model_dof = int(
+            getattr(
+                model,
+                "dof_num",
+                getattr(
+                    model,
+                    "num_actions",
+                    getattr(model, "num_action", model_dof_num),
+                ),
+            )
+        )
+        if model_dof < 1 or model_dof > self.dof_num:
+            raise ValueError(
+                f"invalid model dof_num {model_dof}; control dof_num is {self.dof_num}"
+            )
+        return model_dof
+
+    def get_model_joint_state(self, model):
+        model_dof = self.get_model_dof_num(model)
+        return self.current_q[:model_dof], self.current_dq[:model_dof]
+
+    def slice_model_joint_state(self, model, q, dq):
+        model_dof = self.get_model_dof_num(model)
+        return q[:model_dof], dq[:model_dof]
 
     def hold_last_motor_target(self):
         self.set_motor_target(self.pos_last, self.kp_last, self.kd_last)
@@ -634,6 +720,7 @@ class BxiExample(HotReloadMixin, Node):
         # 用当前观测预推理一次，不输出到电机；有历史观测的模型随后用当前观测填满历史。
         q = self.qpos.copy()
         dq = self.qvel.copy()
+        qj, dqj = self.slice_model_joint_state(model, q, dq)
         omega = self.omega.copy()
         quat_xyzw = self.quat_xyzw.copy()
         quat_wxyz = self.quat_wxyz.copy()
@@ -644,12 +731,12 @@ class BxiExample(HotReloadMixin, Node):
         history_len = getattr(model, "obs_history_len", 1)
         for _ in range(history_len*2):
             if type(model) is NormalMotionPolicyMjlab:
-                model.infer_step(q, dq, quat_xyzw, omega, cmd_vel)
+                model.infer_step(qj, dqj, quat_xyzw, omega, cmd_vel)
             else:
                 if with_cmd_vel:
-                    model.inference_step(q, dq, quat_wxyz, omega, cmd_vel)
+                    model.inference_step(qj, dqj, quat_wxyz, omega, cmd_vel)
                 else:
-                    model.inference_step(q, dq, quat_wxyz, omega)
+                    model.inference_step(qj, dqj, quat_wxyz, omega)
 
 # ----------------------------------- 工具类函数 ---------------------------------- #
 
