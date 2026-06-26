@@ -5,6 +5,7 @@ import pickle
 import queue
 import threading
 import time
+import weakref
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 import numpy as np
@@ -12,7 +13,6 @@ import numpy as np
 from ament_index_python.packages import get_package_share_path
 from bxi_example_py_elf3.utils.robot_state_base import MotorFrame, RobotControlState
 from bxi_example_py_elf3.utils.state_machine import StateBehavior, TransitionProfile
-from bxi_example_py_elf3.utils.tfs import quaternion_to_euler_array
 
 if TYPE_CHECKING:
     from bxi_example_py_elf3.bxi_example_demo import BxiExample
@@ -72,6 +72,7 @@ class _BleGattWriter:
 
         try:
             self._queue.put_nowait(self.payload)
+            print("1", flush=True)
             return True
         except queue.Full:
             self._log_throttled(
@@ -185,6 +186,11 @@ class _BleGattWriter:
             print(message)
 
 
+_SHARED_BLE_GATT_WRITERS: "weakref.WeakValueDictionary[tuple[str, str, bytes, bool], _BleGattWriter]" = (
+    weakref.WeakValueDictionary()
+)
+
+
 class _BleFrameTrigger:
     def __init__(
         self,
@@ -214,6 +220,14 @@ class _BleFrameTrigger:
         self._writer: Optional[_BleGattWriter] = None
         self._triggered_frames: set[int] = set()
         self._last_frame: Optional[int] = None
+
+    def _writer_key(self) -> tuple[str, str, bytes, bool]:
+        return (
+            self.mac,
+            self.characteristic,
+            self.write_payload,
+            self.write_with_response,
+        )
 
     @staticmethod
     def _parse_trigger_frames(frames: Optional[list]) -> set[int]:
@@ -246,13 +260,17 @@ class _BleFrameTrigger:
         if not self.configured():
             return
         if self._writer is None:
-            self._writer = _BleGattWriter(
-                self.mac,
-                self.characteristic,
-                self.write_payload,
-                self.write_with_response,
-                logger=self._make_logger(ctx),
-            )
+            key = self._writer_key()
+            self._writer = _SHARED_BLE_GATT_WRITERS.get(key)
+            if self._writer is None:
+                self._writer = _BleGattWriter(
+                    self.mac,
+                    self.characteristic,
+                    self.write_payload,
+                    self.write_with_response,
+                    logger=self._make_logger(ctx),
+                )
+                _SHARED_BLE_GATT_WRITERS[key] = self._writer
         self._writer.start()
 
     def stop(self) -> None:
@@ -265,8 +283,20 @@ class _BleFrameTrigger:
         self._triggered_frames.clear()
         self._last_frame = None
 
-    def write_for_timestep(self, ctx: BxiExample, timestep: float) -> None:
-        if not self.trigger_frames:
+    def write_now(self, ctx: BxiExample) -> None:
+        self.start(ctx)
+        if self._writer is None:
+            return
+        self._writer.write()
+
+    def write_for_timestep(
+        self,
+        ctx: BxiExample,
+        timestep: float,
+        trigger_frames: Optional[set[int]] = None,
+    ) -> None:
+        frames = self.trigger_frames if trigger_frames is None else trigger_frames
+        if not frames:
             return
 
         self.start(ctx)
@@ -280,7 +310,7 @@ class _BleFrameTrigger:
             candidates = range(self._last_frame + 1, frame + 1)
 
         for candidate in candidates:
-            if candidate not in self.trigger_frames:
+            if candidate not in frames:
                 continue
             if candidate in self._triggered_frames:
                 continue
@@ -361,7 +391,7 @@ class ZeroTorqueState(RobotControlState):
             ctx.joint_nominal_pos,
             np.zeros(ctx.dof_num, dtype=np.float32),
             np.zeros(ctx.dof_num, dtype=np.float32),
-        )
+        )1
 
 
 class PdBrakeState(RobotControlState):
@@ -505,6 +535,9 @@ class DanceState(RobotControlState):
         ctx.dance.timestep = self._current_segment()[0]
 
     def _advance_segment_if_needed(self, ctx: BxiExample) -> bool:
+        if self.segment_cursor >= len(self.segment_indices):
+            return False
+
         _, end_frame = self._current_segment()
         if ctx.dance.timestep < end_frame:
             return True
@@ -518,7 +551,7 @@ class DanceState(RobotControlState):
         return True
 
     def on_bind(self, ctx):
-        self._ble_frame_trigger.start(ctx)
+        pass
 
     def on_prepare_enter(
         self,
@@ -538,7 +571,6 @@ class DanceState(RobotControlState):
         self.playing = True
         self._reset_segment_playback(ctx)
         self._ble_frame_trigger.reset()
-        self._ble_frame_trigger.start(ctx)
 
     def on_exit(self, ctx: BxiExample) -> None:
         super().on_exit(ctx)
@@ -592,6 +624,360 @@ class DanceState(RobotControlState):
                     "duration": 0.5,
                     "data": {"run_from": False},
                 },
+            )
+            return
+
+        if ctx.is_orientation_unsafe(ctx.current_quat_xyzw):
+            print("check safe error, zero_torque!")
+            ctx.request_state("zero_torque", trigger="safety")
+            return
+
+        frame = self.get_motor_frame(ctx, dt, False)
+        if frame is not None:
+            ctx.set_motor_target(*frame)
+
+    def on_action(self, ctx: BxiExample, action_name: str) -> bool:
+        if action_name != "toggle_dance_pause":
+            return False
+
+        self.playing = not self.playing
+        return True
+
+
+class DancePlaylistState(RobotControlState):
+    def __init__(
+        self,
+        name: str,
+        state_id: int,
+        playlist: list,
+        ble_mac: str = "",
+        ble_mac_address: str = "",
+        ble_characteristic: str = "",
+        ble_characteristic_address: str = "",
+        ble_characteristic_uuid: str = "",
+        ble_trigger_frames: Optional[list] = None,
+        ble_frames: Optional[list] = None,
+        ble_write_byte: int = 1,
+        ble_write_with_response: bool = False,
+        return_state: str = "normal",
+        finish_trigger: str = "motion_finished",
+        end_transition: Optional[dict] = None,
+    ):
+        super().__init__(name, state_id)
+        self.playing = True
+        self.playlist = self._parse_playlist(playlist)
+        self.playlist_cursor = 0
+        self.return_state = return_state
+        self.finish_trigger = finish_trigger
+        self.end_transition = end_transition or {
+            "base": "dual_running_blend",
+            "duration": 0.5,
+            "data": {"run_from": False},
+        }
+        self._ble_frame_trigger = _BleFrameTrigger(
+            name,
+            ble_mac=ble_mac,
+            ble_mac_address=ble_mac_address,
+            ble_characteristic=ble_characteristic,
+            ble_characteristic_address=ble_characteristic_address,
+            ble_characteristic_uuid=ble_characteristic_uuid,
+            ble_trigger_frames=ble_trigger_frames,
+            ble_frames=ble_frames,
+            ble_write_byte=ble_write_byte,
+            ble_write_with_response=ble_write_with_response,
+        )
+
+    @staticmethod
+    def _parse_playlist(playlist: list) -> list[dict[str, Any]]:
+        if not playlist:
+            raise ValueError("DancePlaylistState playlist must not be empty")
+
+        parsed = []
+        for index, item in enumerate(playlist):
+            if isinstance(item, str):
+                parsed.append(
+                    {
+                        "policy": item,
+                        "start": None,
+                        "end": None,
+                        "ble_trigger_frames": None,
+                    }
+                )
+                continue
+
+            if isinstance(item, (list, tuple)):
+                if len(item) != 3:
+                    raise ValueError(
+                        "DancePlaylistState list item must be [policy, start, end]: "
+                        f"item {index}={item}"
+                    )
+                policy_name, start, end = item
+                parsed.append(
+                    {
+                        "policy": str(policy_name),
+                        "start": int(float(start)),
+                        "end": int(float(end)),
+                        "ble_trigger_frames": None,
+                    }
+                )
+                continue
+
+            if not isinstance(item, dict):
+                raise ValueError(
+                    f"DancePlaylistState playlist item {index} must be dict/list/string"
+                )
+
+            policy_name = (
+                item.get("policy")
+                or item.get("policy_attr")
+                or item.get("model")
+                or item.get("name")
+            )
+            if not policy_name:
+                raise ValueError(
+                    f"DancePlaylistState playlist item {index} must define policy"
+                )
+
+            segment = item.get("segment") or item.get("frames")
+            if segment is not None:
+                if len(segment) != 2:
+                    raise ValueError(
+                        f"DancePlaylistState segment must be [start, end]: {segment}"
+                    )
+                start, end = segment
+            else:
+                start = item.get("start_frame", item.get("start"))
+                end = item.get("end_frame", item.get("end"))
+
+            start = None if start is None else int(float(start))
+            end = None if end is None else int(float(end))
+            if start is not None and end is not None and end <= start:
+                raise ValueError(
+                    "DancePlaylistState segment must satisfy start < end: "
+                    f"{(start, end)}"
+                )
+
+            raw_ble_frames = (
+                item["ble_trigger_frames"]
+                if "ble_trigger_frames" in item
+                else item.get("ble_frames")
+            )
+            parsed.append(
+                {
+                    "policy": str(policy_name),
+                    "start": start,
+                    "end": end,
+                    "ble_trigger_frames": (
+                        None
+                        if raw_ble_frames is None
+                        else _BleFrameTrigger._parse_trigger_frames(raw_ble_frames)
+                    ),
+                }
+            )
+
+        return parsed
+
+    def _current_item(self) -> dict[str, Any]:
+        return self.playlist[self.playlist_cursor]
+
+    def _current_policy_name(self) -> str:
+        return self._current_item()["policy"]
+
+    def _current_ble_trigger_frames(self) -> Optional[set[int]]:
+        item_frames = self._current_item().get("ble_trigger_frames")
+        if item_frames is None:
+            return None
+        return self._ble_frame_trigger.trigger_frames | item_frames
+
+    def _current_policy(self, ctx: BxiExample) -> Any:
+        policy_name = self._current_policy_name()
+        if not hasattr(ctx, policy_name):
+            raise AttributeError(
+                f"DancePlaylistState policy '{policy_name}' is not loaded on ctx"
+            )
+        return getattr(ctx, policy_name)
+
+    def _motion_frame_count(self, policy: Any) -> Optional[int]:
+        motionpos = getattr(policy, "motionpos", None)
+        if motionpos is not None:
+            return int(motionpos.shape[0])
+        motioninputpos = getattr(policy, "motioninputpos", None)
+        if motioninputpos is not None:
+            return int(motioninputpos.shape[0])
+        return None
+
+    def _current_bounds(self, policy: Any) -> tuple[int, int]:
+        item = self._current_item()
+        start = item["start"]
+        if start is None:
+            start = int(getattr(policy, "start_frame", 0))
+
+        end = item["end"]
+        if end is None:
+            frame_count = self._motion_frame_count(policy)
+            if frame_count is not None:
+                end = frame_count
+            else:
+                end = int(getattr(policy, "end_frame")) + 1
+
+        if start < 0 or end <= start:
+            raise ValueError(
+                f"DancePlaylistState invalid segment for {item['policy']}: "
+                f"{(start, end)}"
+            )
+        return start, end
+
+    def _activate_current_item(
+        self,
+        ctx: BxiExample,
+        reset_runtime: bool = False,
+    ) -> Any:
+        policy = self._current_policy(ctx)
+        start, _ = self._current_bounds(policy)
+        policy.timestep = start
+        if hasattr(policy, "timeinit"):
+            policy.timeinit = 0.0
+        if reset_runtime:
+            self._reset_policy_runtime(policy)
+        return policy
+
+    def _reset_policy_runtime(self, policy: Any) -> None:
+        action_buffer = getattr(policy, "action_buffer", None)
+        if action_buffer is not None:
+            try:
+                action_buffer[...] = 0.0
+            except TypeError:
+                policy.action_buffer = np.zeros_like(action_buffer, dtype=np.float32)
+
+        history_buffers = getattr(policy, "history_buffers", None)
+        if isinstance(history_buffers, dict):
+            history_buffers.clear()
+
+        history_lengths = getattr(policy, "observation_history_lengths", None)
+        if history_lengths is not None:
+            policy.obs_history_len = max(1, max(int(float(v)) for v in history_lengths))
+
+    def _reset_playlist(
+        self,
+        ctx: BxiExample,
+        reset_runtime: bool = False,
+    ) -> Any:
+        self.playlist_cursor = 0
+        return self._activate_current_item(ctx, reset_runtime=reset_runtime)
+
+    def _advance_playlist_if_needed(self, ctx: BxiExample) -> bool:
+        if self.playlist_cursor >= len(self.playlist):
+            return False
+
+        policy = self._current_policy(ctx)
+        _, end_frame = self._current_bounds(policy)
+        if policy.timestep < end_frame:
+            return True
+
+        self.playlist_cursor += 1
+        if self.playlist_cursor >= len(self.playlist):
+            return False
+
+        self._activate_current_item(ctx, reset_runtime=True)
+        self._ble_frame_trigger.reset()
+        return True
+
+    def on_bind(self, ctx):
+        pass
+
+    def on_prepare_enter(
+        self,
+        ctx: BxiExample,
+        from_state: StateBehavior[BxiExample],
+        transition: TransitionProfile,
+    ) -> None:
+        super().on_prepare_enter(ctx, from_state, transition)
+        policy = self._reset_playlist(ctx, reset_runtime=True)
+        ctx.preheat_model(policy)
+        self._ble_frame_trigger.reset()
+        self._ble_frame_trigger.start(ctx)
+
+    def on_enter(self, ctx: BxiExample) -> None:
+        self.playing = True
+        self._reset_playlist(ctx, reset_runtime=True)
+        self._ble_frame_trigger.reset()
+
+    def on_transition_runtime_enter(
+        self,
+        ctx: BxiExample,
+        transition: TransitionProfile,
+    ) -> None:
+        self.playing = True
+        self._reset_playlist(ctx, reset_runtime=False)
+        self._ble_frame_trigger.reset()
+
+    def get_first_frame(self, ctx: BxiExample) -> Optional[MotorFrame]:
+        policy = self._current_policy(ctx)
+        qpos = getattr(policy, "target_dof_pos", None)
+        if qpos is None:
+            qpos = getattr(policy, "default_dof_pos", None)
+        if qpos is None:
+            return None
+        return self._motor_frame(qpos, policy.kps, policy.kds)
+
+    def get_transition_frame(
+        self,
+        ctx: BxiExample,
+        role: str,
+        transition: TransitionProfile,
+    ) -> Optional[MotorFrame]:
+        frame = self.get_motor_frame(ctx, float(getattr(ctx, "dt", 0.0)), True)
+        if frame is None:
+            return None
+
+        if self.playing and self._transition_bool(
+            transition,
+            "advance_during_transition",
+            False,
+        ):
+            policy = self._current_policy(ctx)
+            policy.timestep += 50 * float(getattr(ctx, "dt", 0.0))
+
+        return frame
+
+    def get_motor_frame(
+        self, ctx: BxiExample, dt: float, on_translation: bool
+    ) -> Optional[MotorFrame]:
+        if not self._advance_playlist_if_needed(ctx):
+            return None
+
+        policy = self._current_policy(ctx)
+        frame_count = self._motion_frame_count(policy)
+        if frame_count is not None and policy.timestep >= frame_count:
+            return None
+
+        if self.playing and not on_translation:
+            self._ble_frame_trigger.write_for_timestep(
+                ctx,
+                policy.timestep,
+                self._current_ble_trigger_frames(),
+            )
+
+        qpos = policy.inference_step(
+            ctx.current_q,
+            ctx.current_dq,
+            ctx.current_quat_wxyz,
+            ctx.current_omega,
+        )
+
+        if self.playing and not on_translation:
+            policy.timestep += 50 * dt
+
+        return self._motor_frame(qpos, policy.kps, policy.kds)
+
+    def on_update(self, ctx: BxiExample, dt: float) -> None:
+        if not self._advance_playlist_if_needed(ctx):
+            print("Dance playlist finished, resetting simulation.")
+            self._reset_playlist(ctx)
+            ctx.request_state(
+                self.return_state,
+                trigger=self.finish_trigger,
+                transition=self.end_transition,
             )
             return
 
@@ -710,20 +1096,6 @@ class ForwardFlipState(MotionState):
     policy_attr = "forward_flip"
     finish_trigger = "forward_flip_finished"
     end_frame_trim = 125
-    end_transition = {
-        "base": "dual_running_blend",
-        "duration": 1.0,
-        "data": {
-            "curve": "smootherstep",
-            "run_from": True,
-        },  # 过渡的时候模型继续推理，同时推理下一个模型
-    }
-
-
-class BalletState(MotionState):
-    policy_attr = "ballet"
-    finish_trigger = "ballet_finished"
-    end_frame_trim = 330
     end_transition = {
         "base": "dual_running_blend",
         "duration": 1.0,
@@ -898,99 +1270,6 @@ class HelloState(RobotControlState):
 
         self.playing = not self.playing
         return True
-
-
-class RecoverState(RobotControlState):
-    end_frame_trim = 0
-
-    def __init__(self, name: str, state_id: int):
-        super().__init__(name, state_id)
-        self.playing = True
-        self.motion_selected = False
-
-    def on_enter_transition(self, ctx, from_state, progress, transition):
-        ctx.recover.timestep = ctx.recover.start_frame
-        return super().on_enter_transition(ctx, from_state, progress, transition)
-
-    def on_prepare_enter(
-        self,
-        ctx: BxiExample,
-        from_state: StateBehavior[BxiExample],
-        transition: TransitionProfile,
-    ) -> None:
-        super().on_prepare_enter(ctx, from_state, transition)
-        if self._configure_recover_motion(ctx):
-            ctx.preheat_model(ctx.recover)
-
-    def on_enter(self, ctx: BxiExample) -> None:
-        self.playing = True
-        if not self._configure_recover_motion(ctx):
-            ctx.request_state("zero_torque", trigger="recover_pose_rejected")
-
-    def _configure_recover_motion(self, ctx: BxiExample) -> bool:
-        eu_ang = quaternion_to_euler_array(ctx.quat_xyzw)
-        eu_ang[eu_ang > math.pi] -= 2 * math.pi
-
-        if eu_ang[1] < -(math.pi / 4.0):
-            # 躺地上
-            ctx.recover.end_frame = 880
-            ctx.recover.timestep = 600
-            ctx.recover.start_frame = 600
-            self.end_frame_trim = 20
-            self.motion_selected = True
-            return True
-        elif eu_ang[1] > (math.pi / 4.0):
-            # 趴地上
-            ctx.recover.end_frame = 1690
-            ctx.recover.timestep = 1350
-            ctx.recover.start_frame = 1350
-            self.end_frame_trim = 0
-            self.motion_selected = True
-            return True
-
-        self.motion_selected = False
-        return False
-
-    def get_first_frame(self, ctx: BxiExample) -> Optional[MotorFrame]:
-        if not self.motion_selected:
-            return None
-        return self._motor_frame(
-            ctx.recover.target_dof_pos, ctx.recover.kps, ctx.recover.kds
-        )
-
-    def get_motor_frame(
-        self, ctx: BxiExample, dt: float, on_translation: bool
-    ) -> Optional[MotorFrame]:
-        if ctx.recover.timestep > ctx.recover.end_frame:
-            return None
-
-        qpos = ctx.recover.inference_step(
-            ctx.current_q,
-            ctx.current_dq,
-            ctx.current_quat_wxyz,
-            ctx.current_omega,
-        )
-
-        if self.playing:
-            ctx.recover.timestep += 50 * dt  # 模型动画是50hz播放的，dt是推理间隔
-        return self._motor_frame(qpos, ctx.recover.kps, ctx.recover.kds)
-
-    def on_update(self, ctx: BxiExample, dt: float) -> None:
-        if ctx.recover.timestep > ctx.recover.end_frame - self.end_frame_trim:
-            ctx.request_state(
-                "normal",
-                trigger="recover_finished",
-                transition={
-                    "base": "dual_running_blend",
-                    "duration": 0.5,
-                    "data": {"run_from": True},  #
-                },
-            )
-            return
-
-        frame = self.get_motor_frame(ctx, dt, False)
-        if frame is not None:
-            ctx.set_motor_target(*frame)
 
 
 class AmpRunState(RobotControlState):

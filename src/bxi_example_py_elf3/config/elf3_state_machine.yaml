@@ -8,6 +8,19 @@ graph:
     dot: /tmp/elf3_state_machine.dot
     mermaid: /tmp/elf3_state_machine.mmd
 
+dance_models:
+  dance_3:
+    class: DanceMotionPolicyGravityIsaaclabV3
+    npz: isaaclab_model/face_3.npz
+    onnx: isaaclab_model/face3.onnx
+    start_frame: 10
+    fixed_pos: true
+  dance_5:
+    class: DanceMotionPolicyGravityIsaaclabV3
+    npz: isaaclab_model/face_4.npz
+    onnx: isaaclab_model/face4.onnx
+    start_frame: 10
+    fixed_pos: true
 #将MotionCommands映射为事件
 remote_events:
   normal_event:
@@ -22,36 +35,15 @@ remote_events:
   initial_pos_event:
     slot: btn_4
     value: 1
-  dance_event:
-    slot: btn_5
-    value: 1
-  recover_event:
-    slot: btn_6
-    value: 1
-  normal_run_event:
-    slot: btn_7
-    value: 1
-  amp_run_event:
-    slot: btn_8
-    value: 1
+  dance_3_event:
+    slot: btn_10
+    value: 2
   toggle_dance_pause_event:
     slot: btn_9
     value: 1
-  back_flip_event:
-    slot: btn_10
-    value: 1
-  forward_flip_event:
-    slot: btn_10
-    value: 2
-  ballet_event:
+  dance_5_event:
     slot: btn_10
     value: 3
-  applause_event:
-    slot: btn_10
-    value: 5
-  hello_event:
-    slot: btn_10
-    value: 6
 
 #预设的一些过度方式
 transition_profiles:
@@ -90,26 +82,24 @@ transition_profiles:
       from_fallback: last_motor 
       to_fallback: first_frame
 
+  dance_entry_blend:
+    duration: 1.0
+    exit_behavior: none
+    enter_behavior: dual_running_blend
+    data:
+      curve: smootherstep
+      run_from: true
+      run_to: true
+      from_fallback: last_motor
+      to_fallback: first_frame
+      advance_during_transition: true
+
 #速度的预设配置
 speed_profiles:
   normal:
     vx_scale: 1.0
     vx_min: -1.0
     vx_max: 1.0
-    vy_scale: 0.5
-    yaw_scale: 1.5
-
-  normal_run:
-    vx_scale: 2.0
-    vx_min: -1.0
-    vx_max: 2.0
-    vy_scale: 0.5
-    yaw_scale: 1.0
-
-  amp_run:
-    vx_scale: 4.0
-    vx_min: -2.0
-    vx_max: 4.0
     vy_scale: 0.5
     yaw_scale: 1.5
 
@@ -136,33 +126,12 @@ states:
             transition: 
               base: first_frame_switch
               enter_duration: 1.0
-        amp_run_event:
-          to: amp_run
-          transition: soft_switch
-        normal_run_event:
-          to: normal_run
-          transition: soft_switch
-        dance_event:
-          to: dance
-          transition: soft_switch
-        recover_event:
-          to: recover
-          transition: soft_switch
-        back_flip_event:
-          to: back_flip
-          transition: soft_switch
-        forward_flip_event:
-          to: forward_flip
-          transition: soft_switch
-        ballet_event:
-          to: ballet
-          transition: soft_switch
-        applause_event:
-          to: applause
-          transition: dual_running_blend
-        hello_event:
-          to: hello
-          transition: dual_running_blend
+        dance_3_event:
+          to: dance_part_3
+          transition: dance_entry_blend
+        dance_5_event:
+          to: dance_part_5
+          transition: dance_entry_blend
 
   zero_torque:
     manifest:
@@ -202,11 +171,6 @@ states:
           transition: 
             base: first_frame_switch
             enter_duration: 1.0
-        recover_event:
-          to: recover
-          transition:
-            base: first_frame_switch
-            enter_duration: 1.0
 
   initial_pos:
     manifest:
@@ -224,162 +188,68 @@ states:
             enter_duration: 1.0
         zero_torque_event: zero_torque
 
-  dance:
+  dance_part_3:
     manifest:
-      label: 跳舞
-      index: 5
+      label: 跳舞片段3
+      index: 6
       group: Advanced
       icon: star_shine
       confirm: true
       confirm_message: 请确保机器人周围1米范围内没有障碍物
-    behavior: DanceState
+    behavior: DancePlaylistState
     params:
-      segments:
-        - [0, 1036]
-        - [1036, 1800]
-        - [1800, 2800]
-        - [2800, 3800]
-        - [3800, 4800]
-        - [4800, 5800]
-      segment_indices: [2, 3, 4, 5, 4, 5]
+      playlist:
+        - {policy: dance_3, ble_trigger_frames: [860]}
       ble_mac: "E0:72:A1:D8:39:8E"
       ble_characteristic_address: "0000ee01-0000-1000-8000-00805f9b34fb"
-      ble_trigger_frames: [100, 500, 800]
       ble_write_byte: 0x01
       ble_write_with_response: false
     transitions:
       on_event:
         normal_event:
           to: normal
-          transition: 
+          transition:
             base: dual_running_blend
             duration: 1.0
         zero_torque_event: zero_torque
+        dance_3_event:
+          to: dance_part_3
+          transition: dance_entry_blend
+        dance_5_event:
+          to: dance_part_5
+          transition: dance_entry_blend
         toggle_dance_pause_event:
           action: toggle_dance_pause
 
-  recover:
+  dance_part_5:
     manifest:
-      label: 起身
-      index: 6
-      group: Advanced
-      icon: accessibility_new
-      confirm: true
-      confirm_message: 请确保机器人周围1米范围内没有障碍物
-    behavior: RecoverState
-    transitions:
-      on_event:
-        zero_torque_event: zero_torque
-
-  amp_run:
-    manifest:
-      label: 高速奔跑
+      label: 跳舞片段5
       index: 7
       group: Advanced
-      icon: sprint
+      icon: star_shine
       confirm: true
-      confirm_message: 高速跑步4m/s，没有越障能力
-    behavior: AmpRunState
-    speed_profile: amp_run
+      confirm_message: 请确保机器人周围1米范围内没有障碍物
+    behavior: DancePlaylistState
+    params:
+      playlist:
+        - {policy: dance_5, ble_trigger_frames: [1210]}
+      ble_mac: "E0:72:A1:D8:39:8E"
+      ble_characteristic_address: "0000ee01-0000-1000-8000-00805f9b34fb"
+      ble_write_byte: 0x01
+      ble_write_with_response: false
     transitions:
       on_event:
         normal_event:
           to: normal
-          transition: soft_switch
-
-  normal_run:
-    manifest:
-      label: 中速奔跑
-      index: 8
-      group: Advanced
-      icon: directions_run
-      confirm: true
-      confirm_message: 高速跑步2m/s，没有越障能力
-    behavior: NormalRunState
-    speed_profile: normal_run
-    transitions:
-      on_event:
-        normal_event:
-          to: normal
-          transition: soft_switch
-
-  back_flip:
-    manifest:
-      label: 后空翻
-      index: 9
-      group: Advanced
-      icon: rotate_left
-      confirm: true
-      confirm_message: 请确保机器人后方3米范围内没有障碍物
-    behavior: BackFlipState
-    transitions:
-      on_event:
+          transition:
+            base: dual_running_blend
+            duration: 1.0
         zero_torque_event: zero_torque
-
-  forward_flip:
-    manifest:
-      label: 前空翻
-      index: 10
-      group: Advanced
-      icon: rotate_right
-      confirm: true
-      confirm_message: 请确保机器人前方3米范围内没有障碍物
-    behavior: ForwardFlipState
-    transitions:
-      on_event:
-        zero_torque_event: zero_torque
-
-  ballet:
-    manifest:
-      label: 芭蕾舞
-      index: 11
-      group: Advanced
-      icon: wand_stars
-      confirm: true
-      confirm_message: 请确保机器人周围5米范围内没有障碍物
-    behavior: BalletState
-    transitions:
-      on_event:
-        normal_event:
-          to: normal
-          transition: 
-            base: dual_running_blend
-            duration: 1.0
-        toggle_dance_pause_event:
-          action: toggle_dance_pause
-
-  applause:
-    manifest:
-      label: 鼓掌
-      index: 12
-      group: Base
-      icon: cheer
-    behavior: ApplauseState
-    speed_profile: normal
-    transitions:
-      on_event:
-        normal_event:
-          to: normal
-          transition: 
-            base: dual_running_blend
-            duration: 1.0
-        toggle_dance_pause_event:
-          action: toggle_dance_pause
-          
-  hello:
-    manifest:
-      label: 挥手
-      index: 13
-      group: Base
-      icon: waving_hand
-    behavior: HelloState
-    speed_profile: normal
-    transitions:
-      on_event:
-        normal_event:
-          to: normal
-          transition: 
-            base: dual_running_blend
-            duration: 1.0
+        dance_3_event:
+          to: dance_part_3
+          transition: dance_entry_blend
+        dance_5_event:
+          to: dance_part_5
+          transition: dance_entry_blend
         toggle_dance_pause_event:
           action: toggle_dance_pause

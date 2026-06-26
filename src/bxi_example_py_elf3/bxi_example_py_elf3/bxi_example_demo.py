@@ -95,22 +95,6 @@ joint_kd = np.array([  # 指定关节的kd，和joint_name顺序一一对应
     2.5,2,2,2.5, 1,1,1],
     dtype=np.float32)
 
-kp_recover = np.array([     # 跌到起身腰部手部pd加大(add pd for hands and waist)
-    500,500,300,
-    150, 150, 150, 200, 50, 50,
-    150, 150, 150, 200, 50, 50,
-    80, 80, 80, 60, 20, 50, 50,
-    80, 80, 80, 60, 20, 50, 50,],
-    dtype=np.float32)
-
-kd_recover = np.array([  # 跌到起身腰部手部pd加大(add pd for hands and waist)
-    5,3,3,
-    2,2,2,2,1,1,
-    2,2,2,2,1,1,
-    2,2,2,2, 1,2,2,
-    2,2,2,2, 1,2,2],
-    dtype=np.float32)
-
 class BxiExample(HotReloadMixin, Node):
     hot_reload_module_path = __file__
 
@@ -234,17 +218,16 @@ class BxiExample(HotReloadMixin, Node):
         model_file_paths: list[str] = []
 
         def model_file(file_name: str) -> str:
-            path = os.path.join(data_dir, file_name)
+            path = (
+                file_name
+                if os.path.isabs(file_name)
+                else os.path.join(data_dir, file_name)
+            )
             model_file_paths.append(path)
             return path
 
         self.normal: HumanoidGaitPolicyLiteIsaaclab = HumanoidGaitPolicyLiteIsaaclab(
             model_file("isaaclab_model/amp_terrain.onnx")
-        )
-        self.recover: DanceMotionPolicyMjlab = DanceMotionPolicyMjlab(
-            model_file("mjlab_model/recover.npz"),
-            model_file("mjlab_model/recover.onnx"),
-            start_frame=600,
         )
         self.dance: DanceMotionPolicyGravityIsaaclabV2 = DanceMotionPolicyGravityIsaaclabV2(
             model_file("isaaclab_model/change_face_fine.npz"),
@@ -272,19 +255,69 @@ class BxiExample(HotReloadMixin, Node):
                 start_frame=150,
             )
         )
-        self.ballet: DanceMotionPolicyGravityIsaaclabV3 = (
-            DanceMotionPolicyGravityIsaaclabV3(
-                model_file("isaaclab_model/ballet.npz"),
-                model_file("isaaclab_model/ballet.onnx"),
-                start_frame=60,
-                fixed_pos=True
-            )
-        )
         self.withoutarm: HumanoidGaitPolicyLiteIsaaclab = HumanoidGaitPolicyLiteIsaaclab(
             model_file("isaaclab_model/withoutarm.onnx")
         )
+        self.load_configured_dance_models(model_file)
         self.model_file_paths: tuple[str, ...] = tuple(model_file_paths)
         self.pd_pos: np.ndarray = self.normal.default_dof_pos
+
+    def load_configured_dance_models(self, model_file):
+        model_configs = self.state_machine_config.get("dance_models", {}) or {}
+        if isinstance(model_configs, list):
+            items = []
+            for config in model_configs:
+                model_name = config.get("name") or config.get("policy")
+                if not model_name:
+                    raise ValueError(
+                        "dance_models list item must define name or policy"
+                    )
+                items.append((model_name, config))
+        else:
+            items = model_configs.items()
+
+        for model_name, config in items:
+            if hasattr(self, model_name):
+                raise ValueError(f"dance model name already exists: {model_name}")
+
+            class_name = config.get(
+                "class",
+                config.get("policy_class", "DanceMotionPolicyGravityIsaaclabV2"),
+            )
+            policy_class = globals().get(class_name)
+            if policy_class is None:
+                raise ValueError(f"unknown dance model class: {class_name}")
+
+            motion_npz = (
+                config.get("npz")
+                or config.get("motion_npz")
+                or config.get("motion")
+            )
+            model_onnx = (
+                config.get("onnx")
+                or config.get("model_onnx")
+                or config.get("model")
+            )
+            if not motion_npz or not model_onnx:
+                raise ValueError(
+                    f"dance model '{model_name}' must define npz and onnx"
+                )
+
+            kwargs = {}
+            if "start_frame" in config:
+                kwargs["start_frame"] = int(config["start_frame"])
+            if "fixed_pos" in config:
+                kwargs["fixed_pos"] = bool(config["fixed_pos"])
+
+            setattr(
+                self,
+                model_name,
+                policy_class(
+                    model_file(motion_npz),
+                    model_file(model_onnx),
+                    **kwargs,
+                ),
+            )
 
     def bind_robot_states(self, robot_states):
         for state in robot_states.values():

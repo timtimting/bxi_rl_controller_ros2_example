@@ -339,8 +339,6 @@ class RobotStateMachine(Generic[CtxT]):
             return
         if rule.to_state not in self._states:
             raise ValueError(f"unknown transition target: {rule.to_state}")
-        if rule.to_state == self.current.name:
-            return
 
         to_state = self._states[rule.to_state]
         profile = rule.profile or self._profiles.get(rule.transition, self._profiles["instant"])
