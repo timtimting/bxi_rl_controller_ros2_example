@@ -331,8 +331,7 @@ class _BleFrameTrigger:
             print(f"[{self.state_name}] {message}")
 
         return log
-haketime < 50:
-        #     self.
+
 
 class NormalState(RobotControlState):
     def on_prepare_enter(
