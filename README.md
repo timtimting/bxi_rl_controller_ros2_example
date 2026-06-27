@@ -26,7 +26,7 @@ ROS2 structure hardware:    ![ROS2 structure hardware](docs/ROS2_structure_hardw
 
 ## Descripiton Files(URDF)    
 1. `elf3_dof29` : Elf3 of dof29
-2. `elf3_dof31` : Elf3 of dof31 (2 on head)    
+2. `elf3_dof31` : Elf3 of dof31 (2 on neck)    
 For USD or XML format please refer to: [unofficical models](https://github.com/MelodyAI/TienKung-Lab-bxi/tree/main/legged_lab/assets/elf3_lite)
 
 ## Instructions    

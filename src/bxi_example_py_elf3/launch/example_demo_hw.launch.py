@@ -95,9 +95,9 @@ def generate_launch_description():
                 description="兼容旧参数；bxi_example_py_elf3_demo内部固定使用31自由度",
             ),
             Node(
-                package="hardware_elf3_head",
-                executable="hardware_elf3_head",
-                name="hardware_elf3_head",
+                package="hardware_elf3_neck",
+                executable="hardware_elf3_neck",
+                name="hardware_elf3_neck",
                 output="screen",
                 parameters=[
                 ],
