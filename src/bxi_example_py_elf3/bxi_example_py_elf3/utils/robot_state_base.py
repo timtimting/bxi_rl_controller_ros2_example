@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Any, Optional, Tuple
+from typing import TYPE_CHECKING, Any, NamedTuple, Optional
 
 import numpy as np
 
@@ -9,7 +9,10 @@ if TYPE_CHECKING:
 else:
     BxiExample = Any
 
-MotorFrame = Tuple[np.ndarray, np.ndarray, np.ndarray]
+class MotorFrame(NamedTuple):
+    qpos: np.ndarray
+    kp: np.ndarray
+    kd: np.ndarray
 
 
 class RobotControlState(StateBehavior[BxiExample]):
@@ -352,14 +355,14 @@ class RobotControlState(StateBehavior[BxiExample]):
         return current_array.copy()
 
     def _motor_frame(self, qpos, kp, kd) -> MotorFrame:
-        frame = (
-            np.asarray(qpos, dtype=np.float32).copy(),
-            np.asarray(kp, dtype=np.float32).copy(),
-            np.asarray(kd, dtype=np.float32).copy(),
+        frame = MotorFrame(
+            qpos=np.asarray(qpos, dtype=np.float32).copy(),
+            kp=np.asarray(kp, dtype=np.float32).copy(),
+            kd=np.asarray(kd, dtype=np.float32).copy(),
         )
         normalizer = getattr(self._ctx, "normalize_motor_frame", None)
         if callable(normalizer):
-            return normalizer(*frame)
+            return MotorFrame(*normalizer(*frame))
         return frame
 
     def _motor_frame_with_head(
@@ -402,10 +405,10 @@ class RobotControlState(StateBehavior[BxiExample]):
         qpos[29:31] = head_pos
         kp[29:31] = head_kp
         kd[29:31] = head_kd
-        return qpos, kp, kd
+        return MotorFrame(qpos, kp, kd)
 
     def _ctx_motor_frame(self, ctx: BxiExample, frame: MotorFrame) -> MotorFrame:
         normalizer = getattr(ctx, "normalize_motor_frame", None)
         if callable(normalizer):
-            return normalizer(*frame)
+            return MotorFrame(*normalizer(*frame))
         return self._motor_frame(*frame)

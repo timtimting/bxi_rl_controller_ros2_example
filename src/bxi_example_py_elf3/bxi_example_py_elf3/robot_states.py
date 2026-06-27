@@ -41,8 +41,6 @@ class NormalState(RobotControlState):
     def get_motor_frame(
         self, ctx: BxiExample, dt: float, on_translation: bool
     ) -> Optional[MotorFrame]:
-        if self.shaketime < 50:
-            self.kp = self.shaketime / 50 * ctx.withoutarm.kps
         cmd_vel = self.get_cmd_vel(ctx)
         q, dq = ctx.get_model_joint_state(ctx.normal)
         qpos, vel = ctx.normal.inference_step(
@@ -53,15 +51,7 @@ class NormalState(RobotControlState):
             cmd_vel,
         )
         frame = self._motor_frame(qpos, ctx.normal.kps, ctx.normal.kds)
-        frame[0][29] = math.sin(self.shaketime / 10) * 0.2   # neck_z_joint 位置
-        frame[0][30] = math.sin(self.shaketime / 5) * 0.2   # neck_y_joint 位置
 
-        frame[1][29] = 20.0  # neck_z_joint kp
-        frame[1][30] = 20.0  # neck_y_joint kp
-
-        frame[2][29] = 1.0   # neck_z_joint kd
-        frame[2][30] = 1.0 
-        self.shaketime += 1
         return frame
 
     def on_update(self, ctx: BxiExample, dt: float) -> None:
@@ -676,6 +666,7 @@ class NormalRunState(RobotControlState):
         )
 
     def on_enter(self, ctx: BxiExample) -> None:
+        self.shaketime = 0
         if hasattr(ctx.normal_run, "action"):
             ctx.normal_run.action = np.zeros_like(ctx.normal_run.action)
 
@@ -706,6 +697,17 @@ class NormalRunState(RobotControlState):
             ctx.normal_run.joint_stiffness,
             ctx.normal_run.joint_damping,
         )
+
+        frame.qpos[29] = math.sin(self.shaketime / 10) * 0.2  # neck_z_joint 位置
+        frame.qpos[30] = math.sin(self.shaketime / 5) * 0.2  # neck_y_joint 位置
+
+        frame.kp[29] = 20.0  # neck_z_joint kp
+        frame.kp[30] = 20.0  # neck_y_joint kp
+
+        frame.kd[29] = 1.0  # neck_z_joint kd
+        frame.kd[30] = 1.0
+        self.shaketime += 1
+
         return frame
 
     def on_update(self, ctx: BxiExample, dt: float) -> None:
