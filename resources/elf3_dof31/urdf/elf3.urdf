@@ -886,7 +886,7 @@
       </geometry>
     </collision>
   </link>
-  <joint name="head_z_joint" type="revolute">
+  <joint name="neck_z_joint" type="revolute">
     <origin xyz="0 0 0.2995" rpy="0 0 0"/>
     <parent link="torso_link"/>
     <child link="head_z_link"/>
@@ -915,7 +915,7 @@
       </geometry>
     </collision>
   </link>
-  <joint name="head_y_joint" type="revolute">
+  <joint name="neck_y_joint" type="revolute">
     <origin xyz="0 0 0" rpy="0 0 0"/>
     <parent link="head_z_link"/>
     <child link="head_y_link"/>
