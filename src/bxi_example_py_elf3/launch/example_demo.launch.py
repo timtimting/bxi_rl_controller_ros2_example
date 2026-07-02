@@ -1,10 +1,12 @@
 import os
 from ament_index_python.packages import get_package_share_path
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
 from launch_ros.actions import Node
 from launch.actions import IncludeLaunchDescription
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import PathJoinSubstitution
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.substitutions import FindPackageShare
 
 def generate_launch_description():
@@ -18,6 +20,11 @@ def generate_launch_description():
 
     return LaunchDescription(
         [
+            DeclareLaunchArgument(
+                "enable_depth_camera",
+                default_value="false",
+                description="Start the optional RealSense depth camera publisher.",
+            ),
             Node(
                 package="mujoco",
                 executable="simulation",
@@ -27,7 +34,6 @@ def generate_launch_description():
                     {"simulation/model_file": xml_file},
                 ],
                 emulate_tty=True,
-                arguments=[("__log_level:=debug")],
             ),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource([
@@ -36,7 +42,8 @@ def generate_launch_description():
                         'launch',
                         'realsense_depth_pub_zlab_origin.launch.py'
                     ])
-                ])
+                ]),
+                condition=IfCondition(LaunchConfiguration("enable_depth_camera")),
             ),
             Node(
                 package="bxi_example_py_elf3",
@@ -49,7 +56,6 @@ def generate_launch_description():
                     {"/hot_reload": True},
                 ],
                 emulate_tty=True,
-                arguments=[("__log_level:=debug")],
             ),
         ]
     )
