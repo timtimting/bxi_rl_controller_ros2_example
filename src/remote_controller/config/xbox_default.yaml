@@ -44,14 +44,9 @@ sources:
       keyboard.vy: {from: keyboard.axis, negative: d, positive: a}
       keyboard.yaw: {from: keyboard.axis, negative: e, positive: q}
       keyboard.normal: {from: keyboard.key, key: "1", hold_ms: 200}
-      keyboard.recover: {from: keyboard.key, key: "2"}
       keyboard.dance: {from: keyboard.key, key: "3"}
-      keyboard.amp_run: {from: keyboard.key, key: "4"}
-      keyboard.normal_run: {from: keyboard.key, key: "5"}
       keyboard.back_flip: {from: keyboard.key, key: "6"}
       keyboard.forward_flip: {from: keyboard.key, key: "7"}
-      keyboard.applause: {from: keyboard.key, key: "8"}
-      keyboard.hello: {from: keyboard.key, key: "9"}
 
 #预设的一些，输入曲线
 curves:
@@ -127,14 +122,9 @@ controls:
     hysteresis: 0.05
 
   keyboard.normal_event: {type: bool, source: keyboard.normal}
-  keyboard.recover_event: {type: bool, source: keyboard.recover}
   keyboard.dance_event: {type: bool, source: keyboard.dance}
-  keyboard.amp_run_event: {type: bool, source: keyboard.amp_run}
-  keyboard.normal_run_event: {type: bool, source: keyboard.normal_run}
   keyboard.back_flip_event: {type: bool, source: keyboard.back_flip}
   keyboard.forward_flip_event: {type: bool, source: keyboard.forward_flip}
-  keyboard.applause_event: {type: bool, source: keyboard.applause}
-  keyboard.hello_event: {type: bool, source: keyboard.hello}
 
 #将统一的controls映射到输出
 outputs:
@@ -178,24 +168,6 @@ outputs:
           - [shoulder.left_event, button.x_event]
           - [keyboard.dance_event]
 
-    - output: btn_6=1
-      when:
-        any:
-          - [shoulder.left_event, button.a_event]
-          - [keyboard.recover_event]
-
-    - output: btn_7=1
-      when:
-        any:
-          - [shoulder.left_event, button.b_event]
-          - [keyboard.normal_run_event]
-
-    - output: btn_8=1
-      when:
-        any:
-          - [shoulder.left_event, button.y_event]
-          - [keyboard.amp_run_event]
-
     - output: btn_9=1
       when:
         - button.x_event
@@ -215,28 +187,6 @@ outputs:
         any:
           - [trigger.left_event, button.y_event]
           - [keyboard.forward_flip_event]
-
-    - output: btn_10=3
-      when:
-        any:
-          - [trigger.left_event, button.a_event]
-
-    - output: btn_10=4
-      when:
-        any:
-          - [trigger.left_event, button.b_event]
-
-    - output: btn_10=5
-      when:
-        any:
-          - [trigger.right_event, button.b_event]
-          - [keyboard.applause_event]
-
-    - output: btn_10=6
-      when:
-        any:
-          - [trigger.right_event, button.a_event]
-          - [keyboard.hello_event]
 
     - output: btn_10=7
       when:

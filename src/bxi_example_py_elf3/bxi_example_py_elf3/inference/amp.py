@@ -145,7 +145,7 @@ class HumanoidGaitPolicyLiteIsaaclab:
         
         # Number of actions and observations.
         # 960/1020D policies are full-body models. 540D policies are no-arm
-        # models and only command waist + legs; applause overlays the arms.
+        # models and only command waist + legs.
         self.robot_dof_num = 29
         self.policy_action_dim = 29
         self.controlled_action_dim = 15

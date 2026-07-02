@@ -173,10 +173,14 @@ class HumanoidGaitDepthPolicyIsaaclab:
         self.depth_history_len = 8
         self.depth_h = 21
         self.depth_w = 32
+        # self.depth_obs_indices = np.array(
+        #     [-15, -13, -11, -9, -7, -5, -3, -1], dtype=np.int32
+        # )
+        #  self.depth_image_buffer = CircularBuffer(length=60)
         self.depth_obs_indices = np.array(
-            [-15, -13, -11, -9, -7, -5, -3, -1], dtype=np.int32
+            [-36, -31, -26, -21, -16, -11, -6, -1], dtype=np.int32
         )
-        self.depth_image_buffer = CircularBuffer(length=60)
+        self.depth_image_buffer = CircularBuffer(length=37)
 
         self.qj_obs = np.zeros(self.num_actions, dtype=np.float32)
         self.dqj_obs = np.zeros(self.num_actions, dtype=np.float32)

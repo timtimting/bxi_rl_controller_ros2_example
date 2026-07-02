@@ -23,7 +23,6 @@ from sensor_msgs.msg import JointState
 from ament_index_python.packages import get_package_share_directory
 
 from bxi_example_py_elf3.inference.beyondmimic import *
-from bxi_example_py_elf3.inference.normal import *
 from bxi_example_py_elf3.inference.amp import *
 from bxi_example_py_elf3.inference.amp_depth import HumanoidGaitDepthPolicyIsaaclab
 from bxi_example_py_elf3.utils.hot_reload import HotReloadMixin
@@ -94,22 +93,6 @@ joint_kd = np.array([  # 指定关节的kd，和joint_name顺序一一对应
     2.5,2,2,2.5,2,2,
     2.5,2,2,2.5, 1,1,1,
     2.5,2,2,2.5, 1,1,1],
-    dtype=np.float32)
-
-kp_recover = np.array([     # 跌到起身腰部手部pd加大(add pd for hands and waist)
-    500,500,300,
-    150, 150, 150, 200, 50, 50,
-    150, 150, 150, 200, 50, 50,
-    80, 80, 80, 60, 20, 50, 50,
-    80, 80, 80, 60, 20, 50, 50,],
-    dtype=np.float32)
-
-kd_recover = np.array([  # 跌到起身腰部手部pd加大(add pd for hands and waist)
-    5,3,3,
-    2,2,2,2,1,1,
-    2,2,2,2,1,1,
-    2,2,2,2, 1,2,2,
-    2,2,2,2, 1,2,2],
     dtype=np.float32)
 
 class BxiExample(HotReloadMixin, Node):
@@ -238,22 +221,11 @@ class BxiExample(HotReloadMixin, Node):
         self.normal: HumanoidGaitPolicyLiteIsaaclab = HumanoidGaitPolicyLiteIsaaclab(
             model_file("isaaclab_model/amp_terrain.onnx")
         )
-        self.recover: DanceMotionPolicyMjlab = DanceMotionPolicyMjlab(
-            model_file("mjlab_model/recover.npz"),
-            model_file("mjlab_model/recover.onnx"),
-            start_frame=600,
-        )
         self.dance: DanceMotionPolicyGravityIsaaclabV3 = DanceMotionPolicyGravityIsaaclabV3(
             model_file("isaaclab_model/shuishou.npz"),
             model_file("isaaclab_model/shuishou.onnx"),
             start_frame=60,
             fixed_pos=True
-        )
-        self.amp_run: HumanoidGaitPolicyLiteIsaaclab = HumanoidGaitPolicyLiteIsaaclab(
-            model_file("isaaclab_model/amp_run.onnx")
-        )
-        self.normal_run: NormalMotionPolicyMjlab = NormalMotionPolicyMjlab(
-            model_file("mjlab_model/model_normal.onnx")
         )
         self.back_flip: DanceMotionPolicyGravityIsaaclab = (
             DanceMotionPolicyGravityIsaaclab(
@@ -268,17 +240,6 @@ class BxiExample(HotReloadMixin, Node):
                 model_file("isaaclab_model/forward_flip.onnx"),
                 start_frame=150,
             )
-        )
-        self.ballet: DanceMotionPolicyGravityIsaaclabV3 = (
-            DanceMotionPolicyGravityIsaaclabV3(
-                model_file("isaaclab_model/ballet.npz"),
-                model_file("isaaclab_model/ballet.onnx"),
-                start_frame=60,
-                fixed_pos=True
-            )
-        )
-        self.withoutarm: HumanoidGaitPolicyLiteIsaaclab = (
-            HumanoidGaitPolicyLiteIsaaclab(model_file("isaaclab_model/withoutarm.onnx"))
         )
         self.normal_depth: HumanoidGaitDepthPolicyIsaaclab = (
             HumanoidGaitDepthPolicyIsaaclab(
@@ -581,13 +542,10 @@ class BxiExample(HotReloadMixin, Node):
             cmd_vel = np.asarray(cmd_vel, dtype=np.float32)
         history_len = getattr(model, "obs_history_len", 1)
         for _ in range(history_len*2):
-            if type(model) is NormalMotionPolicyMjlab:
-                model.infer_step(q, dq, quat_xyzw, omega, cmd_vel)
+            if with_cmd_vel:
+                model.inference_step(q, dq, quat_wxyz, omega, cmd_vel)
             else:
-                if with_cmd_vel:
-                    model.inference_step(q, dq, quat_wxyz, omega, cmd_vel)
-                else:
-                    model.inference_step(q, dq, quat_wxyz, omega)
+                model.inference_step(q, dq, quat_wxyz, omega)
 
 # ----------------------------------- 工具类函数 ---------------------------------- #
 

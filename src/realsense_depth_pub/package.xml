@@ -2,7 +2,7 @@
 <package format="3">
   <name>realsense_depth_pub</name>
   <version>0.0.1</version>
-  <description>Publish RealSense depth as ROS2 Image at fixed rate</description>
+  <description>Publish depth camera images for the BXI controller.</description>
   <maintainer email="you@example.com">you</maintainer>
   <license>BSD</license>
 
@@ -11,8 +11,11 @@
   <depend>rclcpp</depend>
   <depend>sensor_msgs</depend>
 
+  <exec_depend>orbbec_camera</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
+  <test_depend>ament_cmake_pytest</test_depend>
+  <test_depend>python3-pytest</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>
