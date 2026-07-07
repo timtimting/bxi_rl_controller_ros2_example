@@ -26,7 +26,7 @@ ROS2 structure hardware:    ![ROS2 structure hardware](docs/ROS2_structure_hardw
 
 ## Descripiton Files(URDF)    
 1. `elf3_dof29` : Elf3 of dof29
-2. `elf3_dof31` : Elf3 of dof31 (2 on head)    
+2. `elf3_dof31` : Elf3 of dof31 (2 on neck)    
 For USD or XML format please refer to: [unofficical models](https://github.com/MelodyAI/TienKung-Lab-bxi/tree/main/legged_lab/assets/elf3_lite)
 
 ## Instructions    
@@ -36,7 +36,7 @@ For USD or XML format please refer to: [unofficical models](https://github.com/M
 - GitHub Wiki：<https://github.com/bxirobotics/bxi_rl_controller_ros2_example/wiki>
 
 #### 控制维度与模型维度
-当前后端 topic 默认使用 31 个关节，末尾两个关节为 `head_z_joint` 和 `head_y_joint`；已有策略模型仍按各自 `dof_num` 读取观测，目前默认是 29。控制程序会按模型的 `dof_num` 从 31 维 `qpos/qvel` 中截取输入，模型输出短于后端 `dof_num` 时，尾部关节使用零位和默认 PD 参数补齐后再发布。
+当前后端 topic 默认使用 31 个关节，末尾两个关节为 `neck_z_joint` 和 `neck_y_joint`；已有策略模型仍按各自 `dof_num` 读取观测，目前默认是 29。控制程序会按模型的 `dof_num` 从 31 维 `qpos/qvel` 中截取输入，模型输出短于后端 `dof_num` 时，尾部关节使用零位和默认 PD 参数补齐后再发布。
 
 启动时可以覆盖最终 topic 维度，例如临时兼容旧 29 维后端：
 

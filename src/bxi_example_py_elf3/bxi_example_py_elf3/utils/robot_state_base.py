@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Any, Optional, Tuple
+from typing import TYPE_CHECKING, Any, NamedTuple, Optional
 
 import numpy as np
 
@@ -9,7 +9,10 @@ if TYPE_CHECKING:
 else:
     BxiExample = Any
 
-MotorFrame = Tuple[np.ndarray, np.ndarray, np.ndarray]
+class MotorFrame(NamedTuple):
+    qpos: np.ndarray
+    kp: np.ndarray
+    kd: np.ndarray
 
 
 class RobotControlState(StateBehavior[BxiExample]):
@@ -352,60 +355,60 @@ class RobotControlState(StateBehavior[BxiExample]):
         return current_array.copy()
 
     def _motor_frame(self, qpos, kp, kd) -> MotorFrame:
-        frame = (
-            np.asarray(qpos, dtype=np.float32).copy(),
-            np.asarray(kp, dtype=np.float32).copy(),
-            np.asarray(kd, dtype=np.float32).copy(),
+        frame = MotorFrame(
+            qpos=np.asarray(qpos, dtype=np.float32).copy(),
+            kp=np.asarray(kp, dtype=np.float32).copy(),
+            kd=np.asarray(kd, dtype=np.float32).copy(),
         )
         normalizer = getattr(self._ctx, "normalize_motor_frame", None)
         if callable(normalizer):
-            return normalizer(*frame)
+            return MotorFrame(*normalizer(*frame))
         return frame
 
-    def _motor_frame_with_head(
+    def _motor_frame_with_neck(
         self,
         qpos,
         kp,
         kd,
-        head_pos,
-        head_kp=20.0,
-        head_kd=1.0,
+        neck_pos,
+        neck_kp=20.0,
+        neck_kd=1.0,
     ) -> MotorFrame:
         frame = self._motor_frame(qpos, kp, kd)
-        return self._apply_head_target(frame, head_pos, head_kp, head_kd)
+        return self._apply_neck_target(frame, neck_pos, neck_kp, neck_kd)
 
-    def _apply_head_target(
+    def _apply_neck_target(
         self,
         frame: MotorFrame,
-        head_pos,
-        head_kp=20.0,
-        head_kd=1.0,
+        neck_pos,
+        neck_kp=20.0,
+        neck_kd=1.0,
     ) -> MotorFrame:
         qpos, kp, kd = frame
-        head_pos = np.asarray(head_pos, dtype=np.float32).reshape(-1)
-        head_kp = np.asarray(head_kp, dtype=np.float32).reshape(-1)
-        head_kd = np.asarray(head_kd, dtype=np.float32).reshape(-1)
+        neck_pos = np.asarray(neck_pos, dtype=np.float32).reshape(-1)
+        neck_kp = np.asarray(neck_kp, dtype=np.float32).reshape(-1)
+        neck_kd = np.asarray(neck_kd, dtype=np.float32).reshape(-1)
 
-        if head_pos.shape[0] != 2:
-            raise ValueError(f"head_pos must have 2 values, got {head_pos.shape[0]}")
-        if head_kp.shape[0] == 1:
-            head_kp = np.repeat(head_kp, 2)
-        if head_kd.shape[0] == 1:
-            head_kd = np.repeat(head_kd, 2)
-        if head_kp.shape[0] != 2:
-            raise ValueError(f"head_kp must have 1 or 2 values, got {head_kp.shape[0]}")
-        if head_kd.shape[0] != 2:
-            raise ValueError(f"head_kd must have 1 or 2 values, got {head_kd.shape[0]}")
+        if neck_pos.shape[0] != 2:
+            raise ValueError(f"neck_pos must have 2 values, got {neck_pos.shape[0]}")
+        if neck_kp.shape[0] == 1:
+            neck_kp = np.repeat(neck_kp, 2)
+        if neck_kd.shape[0] == 1:
+            neck_kd = np.repeat(neck_kd, 2)
+        if neck_kp.shape[0] != 2:
+            raise ValueError(f"neck_kp must have 1 or 2 values, got {neck_kp.shape[0]}")
+        if neck_kd.shape[0] != 2:
+            raise ValueError(f"neck_kd must have 1 or 2 values, got {neck_kd.shape[0]}")
         if qpos.shape[0] < 31 or kp.shape[0] < 31 or kd.shape[0] < 31:
-            raise ValueError("head control requires a normalized 31-DoF motor frame")
+            raise ValueError("neck control requires a normalized 31-DoF motor frame")
 
-        qpos[29:31] = head_pos
-        kp[29:31] = head_kp
-        kd[29:31] = head_kd
-        return qpos, kp, kd
+        qpos[29:31] = neck_pos
+        kp[29:31] = neck_kp
+        kd[29:31] = neck_kd
+        return MotorFrame(qpos, kp, kd)
 
     def _ctx_motor_frame(self, ctx: BxiExample, frame: MotorFrame) -> MotorFrame:
         normalizer = getattr(ctx, "normalize_motor_frame", None)
         if callable(normalizer):
-            return normalizer(*frame)
+            return MotorFrame(*normalizer(*frame))
         return self._motor_frame(*frame)
