@@ -95,11 +95,14 @@ def generate_launch_description():
                 description="兼容旧参数；bxi_example_py_elf3_demo内部固定使用31自由度",
             ),
             Node(
-                package="hardware_elf3_head",
-                executable="hardware_elf3_head",
-                name="hardware_elf3_head",
+                package="hardware_elf3",
+                executable="hardware_elf3",
+                name="hardware_elf3",
                 output="screen",
                 parameters=[
+                    {"hardware_config/imu": True},      #start imu
+                    {"hardware_config/motor_pwr": True}, #motor poweron
+                    {"hardware_config/motor_disable": 0x00000000}, #motor disable head
                 ],
                 emulate_tty=True,
                 arguments=[("__log_level:=debug")],
