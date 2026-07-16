@@ -197,7 +197,7 @@
                     <joint name="l_wrist_z_joint" pos="0 0 0" axis="0 0 1" range="-0.7854 0.7854" actuatorfrcrange="-25 25" armature="0.00424198"/>
                     <geom rgba="0.752941 0.752941 0.752941 1" mesh="l_wrist_z_link"/>
                     <geom name="l_wrist_z_collision" class="collision" size="0.03" pos="0.04 0 0" type="sphere" condim="1"/>
-                    <geom name="l_wrist_z_collision2" class="collision" type="sphere" size="0.05" pos="0.11 -0.01 0"/>
+                    <!-- <geom name="l_wrist_z_collision2" class="collision" type="sphere" size="0.05" pos="0.11 -0.01 0"/> -->
                   </body>
                 </body>
               </body>
@@ -238,7 +238,7 @@
                     <joint name="r_wrist_z_joint" pos="0 0 0" axis="0 0 1" range="-0.7854 0.7854" actuatorfrcrange="-25 25" armature="0.00424198"/>
                     <geom rgba="0.752941 0.752941 0.752941 1" mesh="r_wrist_z_link"/>
                     <geom name="r_wrist_z_collision" class="collision" size="0.03" pos="0.04 0 0" type="sphere" condim="1"/>
-                    <geom name="r_wrist_z_collision2" class="collision" type="sphere" size="0.05" pos="0.11 0.01 0"/>
+                    <!-- <geom name="r_wrist_z_collision2" class="collision" type="sphere" size="0.05" pos="0.11 0.01 0"/> -->
                   </body>
                 </body>
               </body>

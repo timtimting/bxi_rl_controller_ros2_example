@@ -13,6 +13,7 @@ import numpy as np
 from ament_index_python.packages import get_package_share_path
 from bxi_example_py_elf3.utils.robot_state_base import MotorFrame, RobotControlState
 from bxi_example_py_elf3.utils.state_machine import StateBehavior, TransitionProfile
+from bxi_example_py_elf3.utils.tfs import quaternion_to_euler_array
 
 if TYPE_CHECKING:
     from bxi_example_py_elf3.bxi_example_demo import BxiExample
@@ -1288,6 +1289,98 @@ class HelloState(RobotControlState):
 
         self.playing = not self.playing
         return True
+
+
+class RecoverState(RobotControlState):
+    end_frame_trim = 0
+
+    def __init__(self, name: str, state_id: int):
+        super().__init__(name, state_id)
+        self.playing = True
+        self.motion_selected = False
+
+    def on_enter_transition(self, ctx, from_state, progress, transition):
+        ctx.recover.timestep = ctx.recover.start_frame
+        return super().on_enter_transition(ctx, from_state, progress, transition)
+
+    def on_prepare_enter(
+        self,
+        ctx: BxiExample,
+        from_state: StateBehavior[BxiExample],
+        transition: TransitionProfile,
+    ) -> None:
+        super().on_prepare_enter(ctx, from_state, transition)
+        if self._configure_recover_motion(ctx):
+            ctx.preheat_model(ctx.recover)
+
+    def on_enter(self, ctx: BxiExample) -> None:
+        self.playing = True
+        if not self._configure_recover_motion(ctx):
+            ctx.request_state("zero_torque", trigger="recover_pose_rejected")
+
+    def _configure_recover_motion(self, ctx: BxiExample) -> bool:
+        eu_ang = quaternion_to_euler_array(ctx.quat_xyzw)
+        eu_ang[eu_ang > math.pi] -= 2 * math.pi
+
+        if eu_ang[1] < -(math.pi / 4.0):
+            ctx.recover.end_frame = 880
+            ctx.recover.timestep = 600
+            ctx.recover.start_frame = 600
+            self.end_frame_trim = 20
+            self.motion_selected = True
+            return True
+        if eu_ang[1] > (math.pi / 4.0):
+            ctx.recover.end_frame = 1690
+            ctx.recover.timestep = 1350
+            ctx.recover.start_frame = 1350
+            self.end_frame_trim = 0
+            self.motion_selected = True
+            return True
+
+        self.motion_selected = False
+        return False
+
+    def get_first_frame(self, ctx: BxiExample) -> Optional[MotorFrame]:
+        if not self.motion_selected:
+            return None
+        return self._motor_frame(
+            ctx.recover.target_dof_pos, ctx.recover.kps, ctx.recover.kds
+        )
+
+    def get_motor_frame(
+        self, ctx: BxiExample, dt: float, on_translation: bool
+    ) -> Optional[MotorFrame]:
+        if ctx.recover.timestep > ctx.recover.end_frame:
+            return None
+
+        q, dq = ctx.get_model_joint_state(ctx.recover)
+        qpos = ctx.recover.inference_step(
+            q,
+            dq,
+            ctx.current_quat_wxyz,
+            ctx.current_omega,
+        )
+
+        if self.playing:
+            ctx.recover.timestep += 50 * dt
+        return self._motor_frame(qpos, ctx.recover.kps, ctx.recover.kds)
+
+    def on_update(self, ctx: BxiExample, dt: float) -> None:
+        if ctx.recover.timestep > ctx.recover.end_frame - self.end_frame_trim:
+            ctx.request_state(
+                "normal",
+                trigger="recover_finished",
+                transition={
+                    "base": "dual_running_blend",
+                    "duration": 0.5,
+                    "data": {"run_from": True},
+                },
+            )
+            return
+
+        frame = self.get_motor_frame(ctx, dt, False)
+        if frame is not None:
+            ctx.set_motor_target(*frame)
 
 
 class AmpRunState(RobotControlState):

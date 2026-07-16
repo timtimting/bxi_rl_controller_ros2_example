@@ -247,6 +247,12 @@ class BxiExample(HotReloadMixin, Node):
             model_file("isaaclab_model/amp_terrain.onnx"),
             dof_num=model_dof_num,
         )
+        self.recover: DanceMotionPolicyMjlab = DanceMotionPolicyMjlab(
+            model_file("mjlab_model/recover.npz"),
+            model_file("mjlab_model/recover.onnx"),
+            start_frame=600,
+            dof_num=model_dof_num,
+        )
         self.dance: DanceMotionPolicyGravityIsaaclabV2 = DanceMotionPolicyGravityIsaaclabV2(
             model_file("isaaclab_model/change_face_fine.npz"),
             model_file("isaaclab_model/change_face_fine.onnx"),

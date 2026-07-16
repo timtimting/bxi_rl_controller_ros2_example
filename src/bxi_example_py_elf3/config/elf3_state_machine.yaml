@@ -10,15 +10,15 @@ graph:
 
 dance_models:
   dance_3:
-    class: DanceMotionPolicyGravityIsaaclabV3
-    npz: isaaclab_model/face_3.npz
-    onnx: isaaclab_model/face3.onnx
+    class: DanceMotionPolicyGravityIsaaclabV2
+    npz: isaaclab_model/face3.npz
+    onnx: isaaclab_model/face3new.onnx
     start_frame: 10
     fixed_pos: true
   dance_5:
-    class: DanceMotionPolicyGravityIsaaclabV3
-    npz: isaaclab_model/face_4.npz
-    onnx: isaaclab_model/face4.onnx
+    class: DanceMotionPolicyGravityIsaaclabV2
+    npz: isaaclab_model/face4.npz
+    onnx: isaaclab_model/face4-1.onnx
     start_frame: 10
     fixed_pos: true
 #将MotionCommands映射为事件
@@ -35,15 +35,21 @@ remote_events:
   initial_pos_event:
     slot: btn_4
     value: 1
-  dance_3_event:
+  recover_event:
+    slot: btn_6
+    value: 1
+  forward_flip_event:
     slot: btn_10
     value: 2
+  dance_3_event:
+    slot: btn_10
+    value: 3
   toggle_dance_pause_event:
     slot: btn_9
     value: 1
   dance_5_event:
     slot: btn_10
-    value: 3
+    value: 4
 
 #预设的一些过度方式
 transition_profiles:
@@ -126,6 +132,12 @@ states:
             transition: 
               base: first_frame_switch
               enter_duration: 1.0
+        recover_event:
+          to: recover
+          transition: soft_switch
+        forward_flip_event:
+          to: forward_flip
+          transition: soft_switch
         dance_3_event:
           to: dance_part_3
           transition: dance_entry_blend
@@ -169,6 +181,11 @@ states:
         initial_pos_event: 
           to: initial_pos
           transition: 
+            base: first_frame_switch
+            enter_duration: 1.0
+        recover_event:
+          to: recover
+          transition:
             base: first_frame_switch
             enter_duration: 1.0
 
@@ -232,7 +249,7 @@ states:
     behavior: DancePlaylistState
     params:
       playlist:
-        - {policy: dance_5, ble_trigger_frames: [1210]}
+        - {policy: dance_5, ble_trigger_frames: [960]}
       ble_mac: "E0:72:A1:D8:39:8E"
       ble_characteristic_address: "0000ee01-0000-1000-8000-00805f9b34fb"
       ble_write_byte: 0x01
@@ -253,3 +270,29 @@ states:
           transition: dance_entry_blend
         toggle_dance_pause_event:
           action: toggle_dance_pause
+
+  recover:
+    manifest:
+      label: 起身
+      index: 9
+      group: Advanced
+      icon: accessibility_new
+      confirm: true
+      confirm_message: 请确保机器人周围1米范围内没有障碍物
+    behavior: RecoverState
+    transitions:
+      on_event:
+        zero_torque_event: zero_torque
+
+  forward_flip:
+    manifest:
+      label: 前空翻
+      index: 10
+      group: Advanced
+      icon: rotate_right
+      confirm: true
+      confirm_message: 请确保机器人前方3米范围内没有障碍物
+    behavior: ForwardFlipState
+    transitions:
+      on_event:
+        zero_torque_event: zero_torque

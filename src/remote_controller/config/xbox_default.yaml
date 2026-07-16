@@ -44,10 +44,10 @@ sources:
       keyboard.vy: {from: keyboard.axis, negative: d, positive: a}
       keyboard.yaw: {from: keyboard.axis, negative: e, positive: q}
       keyboard.normal: {from: keyboard.key, key: "1", hold_ms: 200}
-      keyboard.dance_2: {from: keyboard.key, key: "3"}
+      keyboard.recover: {from: keyboard.key, key: "2"}
       keyboard.dance_3: {from: keyboard.key, key: "4"}
       keyboard.dance_5: {from: keyboard.key, key: "5"}
-      keyboard.dance_6: {from: keyboard.key, key: "6"}
+      keyboard.forward_flip: {from: keyboard.key, key: "7"}
 
 #预设的一些，输入曲线
 curves:
@@ -123,10 +123,10 @@ controls:
     hysteresis: 0.05
 
   keyboard.normal_event: {type: bool, source: keyboard.normal}
-  keyboard.dance_2_event: {type: bool, source: keyboard.dance_2}
+  keyboard.recover_event: {type: bool, source: keyboard.recover}
   keyboard.dance_3_event: {type: bool, source: keyboard.dance_3}
   keyboard.dance_5_event: {type: bool, source: keyboard.dance_5}
-  keyboard.dance_6_event: {type: bool, source: keyboard.dance_6}
+  keyboard.forward_flip_event: {type: bool, source: keyboard.forward_flip}
 
 #将统一的controls映射到输出
 outputs:
@@ -164,6 +164,12 @@ outputs:
     - output: btn_4=1
       when: [shoulder.right_event, button.y_event]
 
+    - output: btn_6=1
+      when:
+        any:
+          - [shoulder.left_event, button.a_event]
+          - [keyboard.recover_event]
+
     - output: btn_9=1
       when:
         - button.x_event
@@ -172,29 +178,23 @@ outputs:
         - released: trigger.left_event
         - released: trigger.right_event
 
-    - output: btn_10=1
-      when:
-        any:
-          - [trigger.left_event, button.x_event]
-          - [keyboard.dance_2_event]
-
     - output: btn_10=2
       when:
         any:
           - [trigger.left_event, button.y_event]
-          - [keyboard.dance_3_event]
+          - [keyboard.forward_flip_event]
 
     - output: btn_10=3
       when:
         any:
-          - [trigger.left_event, button.a_event]
-          - [keyboard.dance_5_event]
+          - [trigger.right_event, button.y_event]
+          - [keyboard.dance_3_event]
 
     - output: btn_10=4
       when:
         any:
-          - [trigger.left_event, button.b_event]
-          - [keyboard.dance_6_event]
+          - [trigger.right_event, button.b_event]
+          - [keyboard.dance_5_event]
 
 #自定义命令
 system:
