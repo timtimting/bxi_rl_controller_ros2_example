@@ -196,6 +196,17 @@ outputs:
           - [trigger.right_event, button.b_event]
           - [keyboard.dance_5_event]
 
+    - output: btn_10=5
+      when:
+        any:
+          - [trigger.right_event, button.a_event]
+          - [keyboard.dance_5_event]
+
+    - output: btn_10=6
+      when:
+        any:
+          - [trigger.right_event, button.x_event]
+          - [keyboard.dance_5_event]
 #自定义命令
 system:
   start:

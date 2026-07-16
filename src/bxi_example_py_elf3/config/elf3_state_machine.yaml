@@ -21,6 +21,18 @@ dance_models:
     onnx: isaaclab_model/face4-1.onnx
     start_frame: 10
     fixed_pos: true
+  dance_6:
+    class: DanceMotionPolicyGravityIsaaclabV2
+    npz: isaaclab_model/jixiewu.npz
+    onnx: isaaclab_model/jixiewu2.onnx
+    start_frame: 10
+    fixed_pos: true
+  dance_7:
+    class: DanceMotionPolicyGravityIsaaclabV2
+    npz: isaaclab_model/lichenxi.npz
+    onnx: isaaclab_model/lichenxi3.onnx
+    start_frame: 10
+    fixed_pos: true
 #将MotionCommands映射为事件
 remote_events:
   normal_event:
@@ -50,6 +62,12 @@ remote_events:
   dance_5_event:
     slot: btn_10
     value: 4
+  dance_6_event:
+    slot: btn_10
+    value: 5
+  dance_7_event:
+    slot: btn_10
+    value: 6
 
 #预设的一些过度方式
 transition_profiles:
@@ -143,6 +161,12 @@ states:
           transition: dance_entry_blend
         dance_5_event:
           to: dance_part_5
+          transition: dance_entry_blend
+        dance_6_event:
+          to: dance_part_6
+          transition: dance_entry_blend
+        dance_7_event:
+          to: dance_part_7
           transition: dance_entry_blend
 
   zero_torque:
@@ -268,6 +292,60 @@ states:
         dance_5_event:
           to: dance_part_5
           transition: dance_entry_blend
+        toggle_dance_pause_event:
+          action: toggle_dance_pause
+
+  dance_part_6:
+    manifest:
+      label: 机械舞
+      index: 7
+      group: Advanced
+      icon: star_shine
+      confirm: true
+      confirm_message: 请确保机器人周围1米范围内没有障碍物
+    behavior: DancePlaylistState
+    params:
+      playlist:
+        - {policy: dance_6, ble_trigger_frames: [960]}
+      ble_mac: "E0:72:A1:D8:39:8E"
+      ble_characteristic_address: "0000ee01-0000-1000-8000-00805f9b34fb"
+      ble_write_byte: 0x01
+      ble_write_with_response: false
+    transitions:
+      on_event:
+        normal_event:
+          to: normal
+          transition:
+            base: dual_running_blend
+            duration: 1.0
+        zero_torque_event: zero_torque
+        toggle_dance_pause_event:
+          action: toggle_dance_pause
+    
+  dance_part_7:
+    manifest:
+      label: lichenxi舞蹈
+      index: 7
+      group: Advanced
+      icon: star_shine
+      confirm: true
+      confirm_message: 请确保机器人周围1米范围内没有障碍物
+    behavior: DancePlaylistState
+    params:
+      playlist:
+        - {policy: dance_7, ble_trigger_frames: [960]}
+      ble_mac: "E0:72:A1:D8:39:8E"
+      ble_characteristic_address: "0000ee01-0000-1000-8000-00805f9b34fb"
+      ble_write_byte: 0x01
+      ble_write_with_response: false
+    transitions:
+      on_event:
+        normal_event:
+          to: normal
+          transition:
+            base: dual_running_blend
+            duration: 1.0
+        zero_torque_event: zero_torque
         toggle_dance_pause_event:
           action: toggle_dance_pause
 

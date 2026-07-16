@@ -1504,13 +1504,13 @@ class NormalRunState(RobotControlState):
             ctx.normal_run.joint_damping,
         )
 
-        frame.qpos[29] = math.sin(self.shaketime / 10) * 0.2  # neck_z_joint 位置
-        frame.qpos[30] = math.sin(self.shaketime / 5) * 0.2  # neck_y_joint 位置
+        frame.qpos[29] = math.sin(self.shaketime / 10) * 0.2  # head_z_joint 位置
+        frame.qpos[30] = math.sin(self.shaketime / 5) * 0.2  # head_y_joint 位置
 
-        frame.kp[29] = 20.0  # neck_z_joint kp
-        frame.kp[30] = 20.0  # neck_y_joint kp
+        frame.kp[29] = 20.0  # head_z_joint kp
+        frame.kp[30] = 20.0  # head_y_joint kp
 
-        frame.kd[29] = 1.0  # neck_z_joint kd
+        frame.kd[29] = 1.0  # head_z_joint kd
         frame.kd[30] = 1.0
         self.shaketime += 1
 

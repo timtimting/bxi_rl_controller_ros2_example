@@ -63,8 +63,8 @@ joint_name = (
     "r_wrist_x_joint",
     "r_wrist_y_joint",
     "r_wrist_z_joint",
-    "neck_z_joint",
-    "neck_y_joint",
+    "head_z_joint",
+    "head_y_joint",
     )   
 
 joint_table_dof_num = len(joint_name)

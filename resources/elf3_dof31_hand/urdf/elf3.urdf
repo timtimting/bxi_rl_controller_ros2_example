@@ -864,7 +864,7 @@
     <axis xyz="0 0 1"/>
     <limit lower="-0.7854" upper="0.7854" effort="21" velocity="20"/>
   </joint>
-  <link name="neck_z_link">
+  <link name="head_z_link">
     <inertial>
       <origin xyz="2.48e-06 -2.072e-05 -0.07141233" rpy="0 0 0"/>
       <mass value="0.37665142"/>
@@ -873,7 +873,7 @@
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="./meshes/neck_z_link.STL"/>
+        <mesh filename="./meshes/head_z_link.STL"/>
       </geometry>
       <material name="">
         <color rgba="0.752941176470588 0.752941176470588 0.752941176470588 1"/>
@@ -882,18 +882,18 @@
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="./meshes/neck_z_link.STL"/>
+        <mesh filename="./meshes/head_z_link.STL"/>
       </geometry>
     </collision>
   </link>
-  <joint name="neck_z_joint" type="revolute">
+  <joint name="head_z_joint" type="revolute">
     <origin xyz="0 0 0.2995" rpy="0 0 0"/>
     <parent link="torso_link"/>
-    <child link="neck_z_link"/>
+    <child link="head_z_link"/>
     <axis xyz="0 0 1"/>
     <limit lower="-1.57" upper="1.57" effort="21" velocity="20"/>
   </joint>
-  <link name="neck_y_link">
+  <link name="head_y_link">
     <inertial>
       <origin xyz="0.00693497 0.00114433 -0.00987703" rpy="0 0 0"/>
       <mass value="1.57425673"/>
@@ -902,7 +902,7 @@
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="./meshes/neck_y_link.STL"/>
+        <mesh filename="./meshes/head_y_link.STL"/>
       </geometry>
       <material name="">
         <color rgba="0.752941176470588 0.752941176470588 0.752941176470588 1"/>
@@ -911,14 +911,14 @@
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="./meshes/neck_y_link.STL"/>
+        <mesh filename="./meshes/head_y_link.STL"/>
       </geometry>
     </collision>
   </link>
-  <joint name="neck_y_joint" type="revolute">
+  <joint name="head_y_joint" type="revolute">
     <origin xyz="0 0 0" rpy="0 0 0"/>
-    <parent link="neck_z_link"/>
-    <child link="neck_y_link"/>
+    <parent link="head_z_link"/>
+    <child link="head_y_link"/>
     <axis xyz="0 1 0"/>
     <limit lower="-0.785" upper="0.785" effort="21" velocity="20"/>
   </joint>
@@ -926,7 +926,7 @@
   <link name="mid360_link"/>
   <joint name="mid360_joint" type="fixed">
     <origin xyz="0 0 -0.081" rpy="3.1416 0 0"/>
-    <parent link="neck_y_link"/>
+    <parent link="head_y_link"/>
     <child link="mid360_link"/>
     <axis xyz="0 0 0"/>
   </joint>
@@ -934,7 +934,7 @@
   <link name="d435i_link"/>
   <joint name="d435i_joint" type="fixed">
     <origin xyz="0.0628 0.0175 -0.048" rpy="-1.5708 0 -1.5708"/>
-    <parent link="neck_y_link"/>
+    <parent link="head_y_link"/>
     <child link="d435i_link"/>
     <axis xyz="0 0 0"/>
   </joint>
