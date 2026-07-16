@@ -240,7 +240,7 @@ states:
     behavior: DancePlaylistState
     params:
       playlist:
-        - {policy: dance_3, ble_trigger_frames: [860]}
+        - {policy: dance_3, ble_trigger_frames: [900]}
       ble_mac: "E0:72:A1:D8:39:8E"
       ble_characteristic_address: "0000ee01-0000-1000-8000-00805f9b34fb"
       ble_write_byte: 0x01
@@ -273,7 +273,7 @@ states:
     behavior: DancePlaylistState
     params:
       playlist:
-        - {policy: dance_5, ble_trigger_frames: [960]}
+        - {policy: dance_5, ble_trigger_frames: [1000]}
       ble_mac: "E0:72:A1:D8:39:8E"
       ble_characteristic_address: "0000ee01-0000-1000-8000-00805f9b34fb"
       ble_write_byte: 0x01
@@ -306,7 +306,7 @@ states:
     behavior: DancePlaylistState
     params:
       playlist:
-        - {policy: dance_6, ble_trigger_frames: [960]}
+        - {policy: dance_6}
       ble_mac: "E0:72:A1:D8:39:8E"
       ble_characteristic_address: "0000ee01-0000-1000-8000-00805f9b34fb"
       ble_write_byte: 0x01
@@ -333,7 +333,7 @@ states:
     behavior: DancePlaylistState
     params:
       playlist:
-        - {policy: dance_7, ble_trigger_frames: [960]}
+        - {policy: dance_7}
       ble_mac: "E0:72:A1:D8:39:8E"
       ble_characteristic_address: "0000ee01-0000-1000-8000-00805f9b34fb"
       ble_write_byte: 0x01
