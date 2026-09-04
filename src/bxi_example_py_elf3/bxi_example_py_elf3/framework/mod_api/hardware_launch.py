@@ -32,7 +32,12 @@ def declare_hardware_launch_arguments() -> list[Any]:
     ]
 
 
-def hardware_node_from_context(context) -> Any:
+def hardware_node_from_context(
+    context,
+    *,
+    disable_imu: bool = False,
+    imu_topic: str | None = None,
+) -> Any:
     from launch.substitutions import LaunchConfiguration
     from launch_ros.actions import Node
 
@@ -41,6 +46,9 @@ def hardware_node_from_context(context) -> Any:
     robot_config = _load_robot_config(config_file)
     enable_head = _resolve_enable_head(enable_head_arg, robot_config)
     hardware_config = _resolve_hardware_config(robot_config, enable_head)
+    if disable_imu:
+        # The standalone hipnuc_imu node owns hardware/imu_data in this mode.
+        hardware_config["hardware_config/imu"] = False
     package_name = "hardware_elf3"
 
     print(
@@ -50,12 +58,17 @@ def hardware_node_from_context(context) -> Any:
         f"config_file={config_file or '<none>'}"
     )
 
+    remappings = []
+    if imu_topic:
+        remappings.append(("hardware/imu_data", imu_topic))
+
     return Node(
         package=package_name,
         executable=package_name,
         name=package_name,
         output="screen",
         parameters=[hardware_config],
+        remappings=remappings,
         emulate_tty=True,
         arguments=[("__log_level:=debug")],
     )
