@@ -130,7 +130,7 @@ def generate_launch_description():
                 emulate_tty=True,
             ),
             Node(
-                # Official HiPNUC serial driver from the bxi_imu workspace.
+                # HiPNUC serial driver built inside this example workspace.
                 package="hipnuc_imu",
                 executable="talker",
                 name="IMU_publisher",
