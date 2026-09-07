@@ -1,11 +1,14 @@
 import csv
+import json
 import os
 from collections import deque
+from datetime import datetime
 
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Imu
+from std_msgs.msg import String
 
 
 FIELDS = (
@@ -50,21 +53,25 @@ class ImuCompareRecorder(Node):
         hardware_topic = self.declare_parameter(
             "hardware_topic", "/hardware/imu_data_hardware"
         ).value
-        output_csv = os.path.expanduser(
-            self.declare_parameter(
-                "output_csv",
-                "/tmp/bxi/bxi_imu_compare.csv",
-            ).value
+        robot_state_topic = self.declare_parameter(
+            "robot_state_topic", "/hardware/state_machine_info"
+        ).value
+        output_dir = os.path.expanduser(
+            self.declare_parameter("output_dir", "/tmp/bxi").value
         )
         self.max_pair_dt = float(
             self.declare_parameter("max_pair_dt_sec", 0.02).value
         )
         self._hipnuc_queue = deque(maxlen=500)
         self._hardware_queue = deque(maxlen=500)
+        self._robot_state = ""
+        self._robot_state_id = ""
+        self._robot_state_mode = ""
+        self._rows_since_flush = 0
 
-        parent = os.path.dirname(output_csv)
-        if parent:
-            os.makedirs(parent, exist_ok=True)
+        os.makedirs(output_dir, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_csv = self._unique_output_path(output_dir, timestamp)
         self._file = open(output_csv, "w", newline="", encoding="utf-8")
         self._writer = csv.DictWriter(self._file, fieldnames=self._fieldnames())
         self._writer.writeheader()
@@ -73,23 +80,37 @@ class ImuCompareRecorder(Node):
         self.create_subscription(
             Imu,
             hipnuc_topic,
-            lambda message: self._on_message("hipnuc", message),
+            lambda message: self._on_imu("hipnuc", message),
             qos_profile_sensor_data,
         )
         self.create_subscription(
             Imu,
             hardware_topic,
-            lambda message: self._on_message("hardware", message),
+            lambda message: self._on_imu("hardware", message),
             qos_profile_sensor_data,
         )
+        self.create_subscription(String, robot_state_topic, self._on_robot_state, 10)
         self.get_logger().info(
             f"recording {hipnuc_topic} and {hardware_topic} to {output_csv}"
         )
 
     @staticmethod
+    def _unique_output_path(output_dir: str, timestamp: str) -> str:
+        base = os.path.join(output_dir, f"imu_compare_{timestamp}")
+        candidate = f"{base}.csv"
+        index = 1
+        while os.path.exists(candidate):
+            candidate = f"{base}_{index}.csv"
+            index += 1
+        return candidate
+
+    @staticmethod
     def _fieldnames() -> list[str]:
         fields = [
             "record_time_sec",
+            "robot_state",
+            "robot_state_id",
+            "robot_state_mode",
             "hipnuc_stamp_sec",
             "hardware_stamp_sec",
             "receive_dt_sec",
@@ -99,7 +120,17 @@ class ImuCompareRecorder(Node):
         fields.extend(f"delta_{field}" for field in FIELDS)
         return fields
 
-    def _on_message(self, source: str, message: Imu) -> None:
+    def _on_robot_state(self, message: String) -> None:
+        try:
+            snapshot = json.loads(message.data)
+            current = snapshot.get("current", {})
+            self._robot_state = str(current.get("name", ""))
+            self._robot_state_id = str(current.get("id", ""))
+            self._robot_state_mode = str(snapshot.get("mode", ""))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            self.get_logger().warning("received invalid robot state message")
+
+    def _on_imu(self, source: str, message: Imu) -> None:
         receive_time = self.get_clock().now().nanoseconds * 1e-9
         own_queue = self._hipnuc_queue if source == "hipnuc" else self._hardware_queue
         other_queue = self._hardware_queue if source == "hipnuc" else self._hipnuc_queue
@@ -131,6 +162,9 @@ class ImuCompareRecorder(Node):
         hardware = _values(hardware_message)
         row = {
             "record_time_sec": f"{max(hipnuc_receive, hardware_receive):.9f}",
+            "robot_state": self._robot_state,
+            "robot_state_id": self._robot_state_id,
+            "robot_state_mode": self._robot_state_mode,
             "hipnuc_stamp_sec": f"{_stamp(hipnuc_message):.9f}",
             "hardware_stamp_sec": f"{_stamp(hardware_message):.9f}",
             "receive_dt_sec": f"{hipnuc_receive - hardware_receive:.9f}",
@@ -144,9 +178,13 @@ class ImuCompareRecorder(Node):
             }
         )
         self._writer.writerow(row)
-        self._file.flush()
+        self._rows_since_flush += 1
+        if self._rows_since_flush >= 250:
+            self._file.flush()
+            self._rows_since_flush = 0
 
     def destroy_node(self) -> bool:
+        self._file.flush()
         self._file.close()
         return super().destroy_node()
 

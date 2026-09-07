@@ -74,6 +74,63 @@ def hardware_node_from_context(
     )
 
 
+def hardware_and_imu_nodes_from_context(context) -> list[Any]:
+    """Select the external IMU when its configured device is available."""
+    from launch.substitutions import LaunchConfiguration
+    from launch_ros.actions import Node
+
+    serial_port = os.path.expandvars(
+        os.path.expanduser(
+            LaunchConfiguration("imu_serial_port").perform(context)
+        )
+    )
+    if not os.path.exists(serial_port):
+        print(
+            f"[bxi imu] {serial_port} not found; "
+            "using the hardware_elf3 IMU."
+        )
+        return [hardware_node_from_context(context)]
+
+    return [
+        hardware_node_from_context(
+            context, imu_topic="/hardware/imu_data_hardware"
+        ),
+        Node(
+            package="hipnuc_imu",
+            executable="talker",
+            name="IMU_publisher",
+            output="screen",
+            emulate_tty=True,
+            parameters=[
+                {
+                    "serial_port": LaunchConfiguration("imu_serial_port"),
+                    "baud_rate": LaunchConfiguration("imu_baud_rate"),
+                    "frame_id": "imu_link",
+                    "imu_switch": True,
+                    "imu_topic": "/hardware/imu_data",
+                    "euler_switch": False,
+                    "magnetic_switch": False,
+                    "temperature_switch": False,
+                    "pressure_switch": False,
+                }
+            ],
+        ),
+        Node(
+            package="bxi_example_py_elf3",
+            executable="imu_compare_recorder",
+            name="imu_compare_recorder",
+            output="screen",
+            parameters=[
+                {
+                    "output_dir": LaunchConfiguration("imu_record_dir"),
+                    "robot_state_topic": "/hardware/state_machine_info",
+                }
+            ],
+            emulate_tty=True,
+        ),
+    ]
+
+
 def _load_robot_config(config_file: str) -> dict[str, Any]:
     if not config_file:
         return {}
