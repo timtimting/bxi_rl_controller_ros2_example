@@ -29,6 +29,11 @@ def declare_hardware_launch_arguments() -> list[Any]:
             default_value="auto",
             description="Use true/false to override modules.head.enabled, or auto.",
         ),
+        DeclareLaunchArgument(
+            "imu_record_dir",
+            default_value="",
+            description="Persistent directory for one CSV IMU recording per run.",
+        ),
     ]
 
 
@@ -59,6 +64,29 @@ def hardware_node_from_context(context) -> Any:
         emulate_tty=True,
         arguments=[("__log_level:=debug")],
     )
+
+
+def hardware_and_imu_recorder_nodes_from_context(context) -> list[Any]:
+    from launch.substitutions import LaunchConfiguration
+    from launch_ros.actions import Node
+
+    return [
+        hardware_node_from_context(context),
+        Node(
+            package="bxi_example_py_elf3",
+            executable="imu_recorder",
+            name="imu_recorder",
+            output="screen",
+            parameters=[
+                {
+                    "imu_topic": "/hardware/imu_data",
+                    "robot_state_topic": "/hardware/state_machine_info",
+                    "output_dir": LaunchConfiguration("imu_record_dir"),
+                }
+            ],
+            emulate_tty=True,
+        ),
+    ]
 
 
 def _load_robot_config(config_file: str) -> dict[str, Any]:

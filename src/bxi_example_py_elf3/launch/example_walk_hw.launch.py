@@ -5,7 +5,7 @@ from launch.actions import OpaqueFunction
 from launch_ros.actions import Node
 from bxi_example_py_elf3.framework.mod_api.hardware_launch import (
     declare_hardware_launch_arguments,
-    hardware_node_from_context,
+    hardware_and_imu_recorder_nodes_from_context,
 )
 
 def generate_launch_description():
@@ -16,7 +16,7 @@ def generate_launch_description():
     return LaunchDescription(
         declare_hardware_launch_arguments()
         + [
-            OpaqueFunction(function=lambda context: [hardware_node_from_context(context)]),
+            OpaqueFunction(function=hardware_and_imu_recorder_nodes_from_context),
             Node(
                 package="bxi_example_py_elf3",
                 executable="bxi_example_py_elf3_mjlab",

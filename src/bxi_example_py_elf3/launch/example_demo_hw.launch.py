@@ -10,7 +10,7 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
 from bxi_example_py_elf3.framework.mod_api.hardware_launch import (
     declare_hardware_launch_arguments,
-    hardware_node_from_context,
+    hardware_and_imu_recorder_nodes_from_context,
 )
 
 LOCK_FILE = "/tmp/bxi_example_hw.lock"
@@ -106,7 +106,7 @@ def generate_launch_description():
                 PythonLaunchDescriptionSource(cameras_launch),
             ),
             OpaqueFunction(
-                function=lambda context: [hardware_node_from_context(context)]
+                function=hardware_and_imu_recorder_nodes_from_context
             ),
             Node(
                 package="bxi_example_py_elf3",
