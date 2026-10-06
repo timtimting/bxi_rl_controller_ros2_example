@@ -48,26 +48,31 @@ modules/
 每个 `modules/<名称>/config.yaml` 保存该 IMU 的驱动名称、设备软连接、
 波特率、输出话题和校验参数。现在已经删除公共的 IMU `config` 目录。
 
-## IMU 优先级
+## IMU 自动探测
 
-软连接名称末尾的数字表示优先级：
+每个厂商仍由自己的 `modules/<厂商>/config.yaml` 配置。`port` 是首选端口，
+`fallback_ports` 可列出备用端口；同一端口上的厂商按 `priority` 从小到大
+依次探测。探测要求在限定时间内连续收到 3 帧协议解析成功、四元数及运动
+数据有效的帧。未通过时会关闭串口，再尝试下一个候选，不会仅凭串口打开
+成功认定型号。
+
+当前顺序是：
 
 ```text
-/dev/ttyIMU                    优先级 0
-/dev/ttyIMU_YESENSE_1          优先级 1
-/dev/ttyIMU_YESENSE_2          优先级 2
+/dev/ttyIMU              -> hipnuc  (priority: 0)
+/dev/ttyIMU              -> yesense (priority: 1)
+/dev/ttyIMU_YESENSE_1    -> yesense (备用端口)
 ```
 
-数字越小，优先级越高。节点会按照优先级依次尝试独占打开串口。如果高
-优先级设备不存在、已经被占用或打开失败，就会尝试下一个设备。
+先完成所有 `/dev/ttyIMU` 的协议探测，再尝试其他端口；其他端口仍使用
+对应模块自己的协议。两个厂商当前均为 921600 波特率。无候选通过时节点
+打印逐项失败原因并以错误状态退出，不发布 IMU 数据。启动日志由遥控器的
+IMU guard 写入 `/var/log/bxi_log/imu/imu_*.log`。`no_valid_protocol_frames_or_no_data`
+表示指定时间内没有可解码帧，单凭这一条不能区分无串口数据与协议不匹配。
 
-当前配置为：
-
-```text
-hipnuc  -> /dev/ttyIMU             -> 921600 波特率
-yesense -> /dev/ttyIMU_YESENSE_1   -> 921600 波特率
-
-坐标轴可以在对应模块的 `config.yaml` 中配置。格式为目标坐标系的
+可用 `probe_timeout_ms`（默认 1200）及 `probe_min_frames`（默认 3）
+调整探测窗口和确认帧数。坐标轴可以在对应模块的 `config.yaml` 中配置，
+格式为目标坐标系的
 `x,y,z` 分量分别取设备的哪个轴，可加 `-` 表示取反，例如：
 
 ```yaml
@@ -75,9 +80,9 @@ axis_mapping: "-y,x,z"
 ```
 
 表示 `robot_x=-imu_y`、`robot_y=imu_x`、`robot_z=imu_z`。三个轴必须各使用一次，且必须构成右手坐标系。
-```
 
-udev 规则必须创建与配置一致的软连接。修改规则后执行：
+udev 规则必须创建与配置一致的软连接。备用别名不存在时会记录
+`open_failed`，不会影响已选中的主端口。修改规则后执行：
 
 ```bash
 sudo cp script/bxi-dev.rules /etc/udev/rules.d/bxi-dev.rules

@@ -36,6 +36,7 @@
 #include <rclcpp/rclcpp.hpp>
 
 #include "bxi_imu/imu_backend.hpp"
+#include "bxi_imu/probe.hpp"
 
 namespace bxi_imu
 {
@@ -71,11 +72,20 @@ public:
     imu_record_dir_ = declare_parameter<std::string>(
       "imu_record_dir", "/var/log/bxi_log/imu/data");
     imu_record_max_files_ = declare_parameter<int>("imu_record_max_files", 10);
+    probe_timeout_ms_ = declare_parameter<int>("probe_timeout_ms", 1200);
+    probe_min_frames_ = declare_parameter<int>("probe_min_frames", 3);
     imu_candidates_ = declare_parameter<std::vector<std::string>>(
       "imu_candidates",
       std::vector<std::string>{
         "hipnuc|/dev/ttyIMU|921600|identity|500.0|2.5",
+        "yesense|/dev/ttyIMU|921600|-y,x,z|200.0|2.5",
         "yesense|/dev/ttyIMU_YESENSE_1|921600|-y,x,z|200.0|2.5"});
+
+    if (probe_timeout_ms_ < 100 || probe_min_frames_ < 2) {
+      RCLCPP_ERROR(get_logger(), "invalid IMU probe settings: timeout_ms=%d min_frames=%d",
+        probe_timeout_ms_, probe_min_frames_);
+      return;
+    }
 
     if (!std::isfinite(quaternion_norm_tolerance_) ||
       quaternion_norm_tolerance_ < 0.0 || quaternion_norm_tolerance_ >= 1.0)
@@ -205,6 +215,7 @@ private:
     bool record_enabled{false};
     std::string record_dir;
     int record_max_files{10};
+    int priority{0};
   };
 
   static bool parse_candidate(const std::string & entry, CandidateConfig & candidate)
@@ -241,7 +252,7 @@ private:
     if (module_fields.empty()) {
       return true;
     }
-    if (module_fields.size() != 15) {
+    if (module_fields.size() != 15 && module_fields.size() != 16) {
       return false;
     }
     try {
@@ -274,6 +285,9 @@ private:
       candidate.quaternion_norm_tolerance = std::stod(module_fields[7]);
       candidate.record_dir = module_fields[13];
       candidate.record_max_files = std::stoi(module_fields[14]);
+      if (module_fields.size() == 16) {
+        candidate.priority = std::stoi(module_fields[15]);
+      }
       candidate.has_module_parameters = true;
     } catch (const std::exception &) {
       return false;
@@ -338,58 +352,101 @@ private:
 
   static int port_priority(const std::string & port)
   {
+    if (port == "/dev/ttyIMU") {
+      return 0;
+    }
     static const std::regex suffix("_([0-9]+)$");
     std::smatch match;
     if (!std::regex_search(port, match, suffix)) {
-      return 0;
+      return 1;
     }
     try {
       return std::stoi(match[1].str()) + 1;
     } catch (const std::exception &) {
-      return 0;
+      return 1;
     }
   }
 
   void select_backend_from_candidates()
   {
-    std::vector<std::string> candidates = imu_candidates_;
-    std::stable_sort(candidates.begin(), candidates.end(), [](const std::string & left,
-      const std::string & right) {
-      const auto port_from_entry = [](const std::string & entry) {
-        CandidateConfig candidate;
-        return parse_candidate(entry, candidate) ? candidate.port : std::string{};
-      };
-      return port_priority(port_from_entry(left)) < port_priority(port_from_entry(right));
-    });
-
-    for (const auto & entry : candidates) {
-      CandidateConfig candidate_config;
-      if (!parse_candidate(entry, candidate_config))
-      {
+    std::vector<CandidateConfig> candidates;
+    for (const auto & entry : imu_candidates_) {
+      CandidateConfig candidate;
+      if (!parse_candidate(entry, candidate)) {
         RCLCPP_WARN(get_logger(), "ignoring malformed imu_candidates entry '%s'", entry.c_str());
         continue;
       }
+      candidates.push_back(std::move(candidate));
+    }
+    std::stable_sort(candidates.begin(), candidates.end(), [](const CandidateConfig & a,
+      const CandidateConfig & b) {
+      const int a_port = port_priority(a.port);
+      const int b_port = port_priority(b.port);
+      return a_port != b_port ? a_port < b_port : a.priority < b.priority;
+    });
+
+    int attempted = 0;
+    for (const auto & candidate_config : candidates) {
+      if ((driver_ != "auto" && driver_ != candidate_config.driver) ||
+        (port_ != "auto" && port_ != candidate_config.port))
+      {
+        continue;
+      }
+
+      ++attempted;
+      RCLCPP_INFO(get_logger(),
+        "probing IMU driver=%s port=%s priority=%d timeout=%dms required_frames=%d",
+        candidate_config.driver.c_str(), candidate_config.port.c_str(),
+        candidate_config.priority, probe_timeout_ms_, probe_min_frames_);
 
       try {
         auto candidate = create_backend(
           candidate_config.driver, candidate_config.port, candidate_config.baudrate, get_logger());
-        if (candidate && candidate->open()) {
-          driver_ = candidate_config.driver;
-          port_ = candidate_config.port;
-          baudrate_ = candidate_config.baudrate;
-          apply_candidate_config(candidate_config);
-          backend_ = std::move(candidate);
-          RCLCPP_INFO(
-            get_logger(), "selected IMU candidate driver=%s port=%s baudrate=%d",
-            driver_.c_str(), port_.c_str(), baudrate_);
-          return;
+        if (!candidate) {
+          RCLCPP_WARN(get_logger(), "IMU probe failed: driver=%s port=%s reason=module_unavailable",
+            candidate_config.driver.c_str(), candidate_config.port.c_str());
+          continue;
         }
+        if (!candidate->open()) {
+          RCLCPP_WARN(get_logger(), "IMU probe failed: driver=%s port=%s reason=open_failed",
+            candidate_config.driver.c_str(), candidate_config.port.c_str());
+          continue;
+        }
+        const double tolerance = candidate_config.has_module_parameters &&
+          std::isfinite(candidate_config.quaternion_norm_tolerance) &&
+          candidate_config.quaternion_norm_tolerance >= 0.0 &&
+          candidate_config.quaternion_norm_tolerance < 1.0 ?
+          candidate_config.quaternion_norm_tolerance : 0.1;
+        const auto result = probe_backend(
+          *candidate, std::chrono::milliseconds(probe_timeout_ms_), probe_min_frames_, tolerance);
+        if (!result.matched) {
+          RCLCPP_WARN(get_logger(),
+            "IMU probe failed: driver=%s port=%s reason=%s valid_frames=%d invalid_frames=%d",
+            candidate_config.driver.c_str(), candidate_config.port.c_str(),
+            result.device_lost ? "device_lost" :
+            result.valid_frames == 0 ? "no_valid_protocol_frames_or_no_data" :
+            "insufficient_consecutive_valid_frames",
+            result.valid_frames, result.invalid_frames);
+          candidate->close();
+          continue;
+        }
+        driver_ = candidate_config.driver;
+        port_ = candidate_config.port;
+        baudrate_ = candidate_config.baudrate;
+        apply_candidate_config(candidate_config);
+        backend_ = std::move(candidate);
+        RCLCPP_INFO(get_logger(),
+          "selected IMU driver=%s port=%s baudrate=%d after %d valid probe frames",
+          driver_.c_str(), port_.c_str(), baudrate_, result.valid_frames);
+        return;
       } catch (const std::exception & error) {
-        RCLCPP_WARN(
-          get_logger(), "ignoring imu_candidates entry '%s': %s", entry.c_str(), error.what());
+        RCLCPP_WARN(get_logger(), "IMU probe failed: driver=%s port=%s reason=exception: %s",
+          candidate_config.driver.c_str(), candidate_config.port.c_str(), error.what());
       }
     }
-    RCLCPP_ERROR(get_logger(), "no usable IMU candidate found in imu_candidates");
+    RCLCPP_ERROR(get_logger(),
+      "IMU startup stopped: no candidate produced %d consecutive valid frames "
+      "(attempted=%d); see each probe failure above", probe_min_frames_, attempted);
   }
 
   void read_loop()
@@ -975,6 +1032,8 @@ private:
   std::string record_file_prefix_;
   std::filesystem::path current_record_path_;
   int record_file_index_{0};
+  int probe_timeout_ms_{1200};
+  int probe_min_frames_{3};
   std::uint64_t recorded_rows_since_flush_{0};
   std::optional<std::chrono::steady_clock::time_point> last_record_time_;
   static constexpr std::size_t record_queue_capacity_{2000};
