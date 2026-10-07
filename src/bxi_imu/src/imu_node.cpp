@@ -560,6 +560,7 @@ private:
   struct RecordedSample
   {
     ImuSample sample;
+    std::int64_t receive_time_ns{0};
     double arrival_gap_ms{0.0};
     bool quaternion_valid{false};
     std::string drop_reason;
@@ -637,6 +638,8 @@ private:
       return;
     }
     const auto now = std::chrono::steady_clock::now();
+    const auto receive_time_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count();
     double arrival_gap_ms = 0.0;
     if (last_record_time_.has_value()) {
       arrival_gap_ms = std::chrono::duration<double, std::milli>(
@@ -644,22 +647,30 @@ private:
     }
     last_record_time_ = now;
 
+    bool queued = false;
     {
       std::lock_guard<std::mutex> lock(record_queue_mutex_);
       if (record_queue_.size() >= record_queue_capacity_) {
         ++dropped_record_count_;
-        return;
+      } else {
+        record_queue_.push_back(
+          RecordedSample{sample, receive_time_ns, arrival_gap_ms, quaternion_valid, drop_reason});
+        queued = true;
+        max_record_queue_depth_ = std::max(max_record_queue_depth_, record_queue_.size());
       }
-      record_queue_.push_back(
-        RecordedSample{sample, arrival_gap_ms, quaternion_valid, drop_reason});
     }
-    record_queue_condition_.notify_one();
+    if (queued) {
+      record_queue_condition_.notify_one();
+    }
   }
 
   void record_writer_loop()
   {
     while (true) {
       RecordedSample recorded_sample;
+      std::size_t queue_depth = 0;
+      std::size_t peak_depth = 0;
+      std::uint64_t dropped_rows = 0;
       {
         std::unique_lock<std::mutex> lock(record_queue_mutex_);
         record_queue_condition_.wait(lock, [this]() {
@@ -670,8 +681,25 @@ private:
         }
         recorded_sample = std::move(record_queue_.front());
         record_queue_.pop_front();
+        queue_depth = record_queue_.size();
+        peak_depth = max_record_queue_depth_;
+        dropped_rows = dropped_record_count_;
       }
       write_recorded_sample(recorded_sample);
+      const auto now = std::chrono::steady_clock::now();
+      if (now >= next_record_stats_at_) {
+        RCLCPP_INFO(get_logger(),
+          "IMU CSV queue: depth=%zu/%zu peak=%zu dropped_rows=%llu",
+          queue_depth, record_queue_capacity_, peak_depth,
+          static_cast<unsigned long long>(dropped_rows));
+        next_record_stats_at_ = now + std::chrono::seconds(30);
+      }
+      if (queue_depth >= record_queue_capacity_ * 3 / 4 && now >= next_record_warning_at_) {
+        RCLCPP_WARN(get_logger(),
+          "IMU CSV queue backlog: depth=%zu/%zu dropped_rows=%llu; IMU publishing continues",
+          queue_depth, record_queue_capacity_, static_cast<unsigned long long>(dropped_rows));
+        next_record_warning_at_ = now + std::chrono::seconds(5);
+      }
     }
   }
 
@@ -684,8 +712,7 @@ private:
     const double norm = quaternion_norm(message.orientation);
     std::ostringstream row;
     row << std::setprecision(12)
-        << std::chrono::duration_cast<std::chrono::nanoseconds>(
-          std::chrono::system_clock::now().time_since_epoch()).count() << ","
+        << recorded_sample.receive_time_ns << ","
         << message.header.stamp.sec << "," << message.header.stamp.nanosec << ","
         << (recorded_sample.quaternion_valid ? 1 : 0) << ","
         << recorded_sample.drop_reason << ","
@@ -723,8 +750,13 @@ private:
       recording_running_ = false;
     }
     record_queue_condition_.notify_one();
-    if (record_writer_thread_.joinable()) {
+    const bool writer_started = record_writer_thread_.joinable();
+    if (writer_started) {
       record_writer_thread_.join();
+    }
+    if (writer_started) {
+      RCLCPP_INFO(get_logger(), "IMU CSV recording stopped: peak_queue_depth=%zu dropped_rows=%llu",
+        max_record_queue_depth_, static_cast<unsigned long long>(dropped_record_count_));
     }
     if (record_file_.is_open()) {
       record_file_.flush();
@@ -1042,6 +1074,9 @@ private:
   std::condition_variable record_queue_condition_;
   std::atomic<bool> recording_running_{false};
   std::uint64_t dropped_record_count_{0};
+  std::size_t max_record_queue_depth_{0};
+  std::chrono::steady_clock::time_point next_record_stats_at_{};
+  std::chrono::steady_clock::time_point next_record_warning_at_{};
   std::thread record_writer_thread_;
 
   BackendPtr backend_;
