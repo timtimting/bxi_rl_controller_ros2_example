@@ -89,6 +89,8 @@ def generate_launch_description():
             DeclareLaunchArgument("baudrate", default_value="921600"),
             DeclareLaunchArgument("probe_timeout_ms", default_value="1200"),
             DeclareLaunchArgument("probe_min_frames", default_value="3"),
+            DeclareLaunchArgument("imu_freshness_mode", default_value="observe"),
+            DeclareLaunchArgument("imu_freshness_lag_limit_ms", default_value="100.0"),
             DeclareLaunchArgument(
                 "imu_record_enabled", default_value="auto",
                 description="Override module CSV recording setting (auto/true/false)",
@@ -111,6 +113,10 @@ def generate_launch_description():
                         ),
                         "probe_min_frames": ParameterValue(
                             LaunchConfiguration("probe_min_frames"), value_type=int
+                        ),
+                        "imu_freshness_mode": LaunchConfiguration("imu_freshness_mode"),
+                        "imu_freshness_lag_limit_ms": ParameterValue(
+                            LaunchConfiguration("imu_freshness_lag_limit_ms"), value_type=float
                         ),
                         "imu_record_enabled_override": ParameterValue(
                             LaunchConfiguration("imu_record_enabled"), value_type=str

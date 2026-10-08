@@ -112,6 +112,8 @@ TEST_F(YesenseStreamTest, ReturnsNewestFrameFromOneSerialRead)
   bxi_imu::ImuSample sample;
   ASSERT_TRUE(backend.read(sample));
   EXPECT_NEAR(sample.imu.linear_acceleration.x, 3.0, 1e-6);
+  ASSERT_TRUE(sample.device_frame_id.has_value());
+  EXPECT_EQ(*sample.device_frame_id, 3u);
 }
 
 TEST_F(YesenseStreamTest, KeepsFrameSplitAcrossSerialReads)

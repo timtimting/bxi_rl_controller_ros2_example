@@ -37,6 +37,7 @@
 
 #include "bxi_imu/imu_backend.hpp"
 #include "bxi_imu/probe.hpp"
+#include "bxi_imu/sample_freshness.hpp"
 
 namespace bxi_imu
 {
@@ -66,6 +67,16 @@ public:
     axis_mapping_ = declare_parameter<std::string>("axis_mapping", "identity");
     imu_frequency_hz_ = declare_parameter<double>("imu_frequency_hz", 200.0);
     imu_timeout_multiplier_ = declare_parameter<double>("imu_timeout_multiplier", 1.5);
+    imu_freshness_mode_ = declare_parameter<std::string>("imu_freshness_mode", "observe");
+    imu_freshness_lag_limit_ms_ = declare_parameter<double>("imu_freshness_lag_limit_ms", 100.0);
+    if (imu_freshness_mode_ != "observe" && imu_freshness_mode_ != "enforce") {
+      RCLCPP_WARN(get_logger(), "invalid imu_freshness_mode; using observe");
+      imu_freshness_mode_ = "observe";
+    }
+    if (!std::isfinite(imu_freshness_lag_limit_ms_) || imu_freshness_lag_limit_ms_ <= 0.0) {
+      RCLCPP_WARN(get_logger(), "invalid imu_freshness_lag_limit_ms; using 100 ms");
+      imu_freshness_lag_limit_ms_ = 100.0;
+    }
     imu_record_enabled_ = declare_parameter<bool>("imu_record_enabled", false);
     imu_record_enabled_override_ = declare_parameter<std::string>(
       "imu_record_enabled_override", "auto");
@@ -469,11 +480,49 @@ private:
         }
         continue;
       }
-      check_imu_timeout(true);
       transform_sample_to_robot_frame(sample);
       const bool quaternion_valid = valid_quaternion(sample.imu.orientation);
+      const auto freshness = freshness_.observe(
+        sample.device_tick, sample.device_tick_period_us, sample.device_tick_modulus,
+        sample.device_tick_kind, std::chrono::steady_clock::now(),
+        imu_freshness_lag_limit_ms_);
+      const auto frame_freshness = frame_freshness_.observe(
+        sample.device_frame_id ?
+        std::optional<std::uint64_t>(*sample.device_frame_id) : std::nullopt,
+        0, std::uint64_t{1} << 16, 4, std::chrono::steady_clock::now(),
+        imu_freshness_lag_limit_ms_);
+      const bool suspicious = freshness.status == FreshnessStatus::repeated ||
+        freshness.status == FreshnessStatus::reversed ||
+        freshness.status == FreshnessStatus::lagging ||
+        frame_freshness.status == FreshnessStatus::repeated ||
+        frame_freshness.status == FreshnessStatus::reversed;
+      if (suspicious) {
+        ++suspicious_frame_count_;
+        RCLCPP_WARN_THROTTLE(
+          get_logger(), *get_clock(), 5000,
+          "IMU device freshness: tick_status=%s frame_status=%s tick=%llu kind=%u "
+          "relative_lag=%.1f ms "
+          "(not absolute sample age), count=%llu mode=%s",
+          freshness_status_name(freshness.status), freshness_status_name(frame_freshness.status),
+          static_cast<unsigned long long>(sample.device_tick.value_or(0)),
+          static_cast<unsigned>(sample.device_tick_kind), freshness.relative_lag_ms,
+          static_cast<unsigned long long>(suspicious_frame_count_), imu_freshness_mode_.c_str());
+      }
+      // Unknown timestamp units are diagnostics only, even when enforcement is requested.
+      const bool freshness_rejected = imu_freshness_mode_ == "enforce" &&
+        sample.device_tick_period_us != 0 &&
+        (freshness.status == FreshnessStatus::repeated ||
+        freshness.status == FreshnessStatus::reversed ||
+        freshness.status == FreshnessStatus::lagging);
       record_sample(
-        sample, quaternion_valid, quaternion_valid ? "" : "invalid_quaternion");
+        sample, freshness, frame_freshness, quaternion_valid,
+        !quaternion_valid ? "invalid_quaternion" :
+        (freshness_rejected ? "device_freshness" : ""));
+      if (freshness_rejected) {
+        check_imu_timeout(false);
+        continue;
+      }
+      check_imu_timeout(true);
       if (!quaternion_valid) {
         ++invalid_quaternion_count_;
         const std::string dropped_count = std::to_string(invalid_quaternion_count_);
@@ -562,6 +611,8 @@ private:
     ImuSample sample;
     std::int64_t receive_time_ns{0};
     double arrival_gap_ms{0.0};
+    FreshnessResult freshness;
+    FreshnessResult frame_freshness;
     bool quaternion_valid{false};
     std::string drop_reason;
   };
@@ -596,7 +647,8 @@ private:
                  << "euler_roll,euler_pitch,euler_yaw,"
                  << "angular_velocity_x,angular_velocity_y,angular_velocity_z,"
                  << "linear_acceleration_x,linear_acceleration_y,linear_acceleration_z,"
-                 << "arrival_gap_ms\n";
+                 << "arrival_gap_ms,device_tick,device_tick_period_us,device_tick_kind,"
+                 << "device_frame_id,freshness_status,frame_status,relative_lag_ms\n";
     record_file_.flush();
     if (record_file_.fail()) {
       RCLCPP_WARN(get_logger(), "cannot write IMU record header; recording disabled");
@@ -632,7 +684,8 @@ private:
   }
 
   void record_sample(
-    const ImuSample & sample, bool quaternion_valid, const char * drop_reason)
+    const ImuSample & sample, FreshnessResult freshness, FreshnessResult frame_freshness,
+    bool quaternion_valid, const char * drop_reason)
   {
     if (!imu_record_enabled_ || !recording_running_) {
       return;
@@ -654,7 +707,9 @@ private:
         ++dropped_record_count_;
       } else {
         record_queue_.push_back(
-          RecordedSample{sample, receive_time_ns, arrival_gap_ms, quaternion_valid, drop_reason});
+          RecordedSample{
+            sample, receive_time_ns, arrival_gap_ms, freshness, frame_freshness,
+            quaternion_valid, drop_reason});
         queued = true;
         max_record_queue_depth_ = std::max(max_record_queue_depth_, record_queue_.size());
       }
@@ -724,7 +779,18 @@ private:
         << message.angular_velocity.x << "," << message.angular_velocity.y << ","
         << message.angular_velocity.z << "," << message.linear_acceleration.x << ","
         << message.linear_acceleration.y << "," << message.linear_acceleration.z << ","
-        << recorded_sample.arrival_gap_ms << "\n";
+        << recorded_sample.arrival_gap_ms << ",";
+    if (recorded_sample.sample.device_tick) {
+      row << *recorded_sample.sample.device_tick;
+    }
+    row << "," << recorded_sample.sample.device_tick_period_us << ","
+        << static_cast<unsigned>(recorded_sample.sample.device_tick_kind) << ",";
+    if (recorded_sample.sample.device_frame_id) {
+      row << *recorded_sample.sample.device_frame_id;
+    }
+    row << "," << freshness_status_name(recorded_sample.freshness.status) << ","
+        << freshness_status_name(recorded_sample.frame_freshness.status) << ","
+        << recorded_sample.freshness.relative_lag_ms << "\n";
     const std::string content = row.str();
     record_file_ << content;
     if (record_file_.fail()) {
@@ -1043,6 +1109,11 @@ private:
   std::string axis_mapping_;
   double imu_frequency_hz_{200.0};
   double imu_timeout_multiplier_{1.5};
+  std::string imu_freshness_mode_{"observe"};
+  double imu_freshness_lag_limit_ms_{100.0};
+  SampleFreshness freshness_;
+  SampleFreshness frame_freshness_;
+  std::uint64_t suspicious_frame_count_{0};
   bool imu_record_enabled_{false};
   std::string imu_record_enabled_override_{"auto"};
   std::string imu_record_dir_{"/var/log/bxi_log/imu/data"};

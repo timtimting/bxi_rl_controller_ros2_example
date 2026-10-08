@@ -60,6 +60,7 @@ std::vector<std::uint8_t> make_imu_frame(float acceleration_x)
 {
   hi91_t data{};
   data.tag = 0x91;
+  data.system_time = static_cast<std::uint32_t>(acceleration_x * 10);
   data.acc[0] = acceleration_x;
   data.quat[0] = 1.0f;
   std::vector<std::uint8_t> payload(sizeof(data));
@@ -109,6 +110,9 @@ TEST_F(HipnucStreamTest, ReturnsNewestFrameFromOneSerialRead)
   bxi_imu::ImuSample sample;
   ASSERT_TRUE(backend.read(sample));
   EXPECT_NEAR(sample.imu.linear_acceleration.x, 3.0 * 9.8, 1e-5);
+  ASSERT_TRUE(sample.device_tick.has_value());
+  EXPECT_EQ(*sample.device_tick, 30u);
+  EXPECT_EQ(sample.device_tick_period_us, 1000u);
 }
 
 TEST_F(HipnucStreamTest, KeepsFrameSplitAcrossSerialReads)

@@ -161,6 +161,19 @@ imu_record_enabled: false
 ```
 
 CSV 的 `receive_time_ns` 在读取线程入队时记录，而不是写盘线程处理时记录。
+CSV 还记录设备原始 `device_tick`、单位 `device_tick_period_us`、`device_frame_id`、
+`freshness_status`、`frame_status` 和 `relative_lag_ms`。状态有 `unknown`、`first`、
+`fresh`、`repeated`、`reversed`、`lagging`。`relative_lag_ms` 是最近两秒
+窗口内主机与设备时间增量的差值，**不是绝对采样年龄**。超核 HI91 使用毫秒，
+HI83 系统时间使用微秒；元生时间单位可能是微秒或 100 微秒，当前仅记录
+原始值及帧号；帧号重复/回退只告警，不用来计算延迟或自动拒收。
+
+默认 `imu_freshness_mode:=observe` 仅限频报告疑似重复、回退或相对滞后，
+不改变发布和机器人保护行为。只有实机核对设备计数规律后，才考虑显式
+使用 `imu_freshness_mode:=enforce`；该模式只对**已知单位**的设备 tick
+拒收异常帧，阈值由 `imu_freshness_lag_limit_ms` 控制（默认 100 ms）。
+控制端另行观察 ROS 消息头相对接收时刻的传输年龄；由于消息头在驱动
+解码时生成，无法据此发现解码前的串口积压，且观察结果不会触发卸力。
 节点每 30 秒输出日志队列的当前深度、峰值和累计丢行数；队列达到
 75% 容量时每 5 秒最多警告一次。队列满时只丢 CSV 行，不影响 IMU 话题发布。
 

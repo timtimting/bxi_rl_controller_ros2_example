@@ -193,6 +193,10 @@ bool HipnucBackend::decode_byte(uint8_t byte, ImuSample & sample)
     sample.has_magnetic = true;
     sample.has_temperature = true;
     sample.has_pressure = true;
+    sample.device_tick = static_cast<std::uint64_t>(raw_.hi91.system_time);
+    sample.device_tick_period_us = 1000;
+    sample.device_tick_modulus = std::uint64_t{1} << 32;
+    sample.device_tick_kind = 1;
     set_now(sample);
     return true;
   }
@@ -235,6 +239,11 @@ bool HipnucBackend::decode_byte(uint8_t byte, ImuSample & sample)
     if (bitmap & HI83_BMAP_TEMPERATURE) {
       sample.temperature.temperature = raw_.hi83.temperature;
       sample.has_temperature = true;
+    }
+    if (bitmap & HI83_BMAP_SYSTEM_TIME) {
+      sample.device_tick = static_cast<std::uint64_t>(raw_.hi83.system_time_us);
+      sample.device_tick_period_us = 1;
+      sample.device_tick_kind = 2;
     }
     set_now(sample);
     return true;

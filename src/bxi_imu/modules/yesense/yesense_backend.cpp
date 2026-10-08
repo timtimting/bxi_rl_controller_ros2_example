@@ -171,6 +171,12 @@ bool YesenseBackend::decode(const uint8_t * data, std::size_t length, ImuSample 
         sample.has_magnetic = decoded_.content.mag_norm != 0;
         sample.has_temperature = decoded_.content.sensor_temp != 0;
         sample.has_pressure = decoded_.content.pressure != 0;
+        sample.device_frame_id = decoded_.tid;
+        if (decoded_.content.sample_timestamp) {
+          sample.device_tick = decoded_.sample_timestamp;
+          sample.device_tick_modulus = std::uint64_t{1} << 32;
+          sample.device_tick_kind = 3;
+        }
         std::memset(&decoded_, 0, sizeof(decoded_));
         found = true;
         ++complete_frames;
