@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from bxi_example_py_elf3.policies import HumanoidGaitPolicyLiteIsaaclab
-from bxi_example_py_elf3.framework.mod_api import ResourceHandle
+from bxi_example_py_elf3.policies.joints import ELF3_ISAAC_PARAMETERS
 from bxi_example_py_elf3.framework.mod_api import RobotControlState
 from bxi_example_py_elf3.framework.mod_api.transition import (
     EntryFrameProvider,
@@ -16,18 +15,15 @@ if TYPE_CHECKING:
 
 
 class PdBrakeState(RobotControlState, EntryFrameProvider, RunningFrameProvider):
-    def __init__(
-        self,
-        name: str,
-        state_id: int,
-        policy: ResourceHandle[HumanoidGaitPolicyLiteIsaaclab],
-    ) -> None:
-        super().__init__(name, state_id, resources=(policy,))
-        self._policy = policy
-
     def _frame(self, ctx: RobotControlContext) -> MotorFrame:
-        policy = self._policy.get()
-        return self._motor_frame_from_target(ctx, policy.default_target)
+        parameters = ELF3_ISAAC_PARAMETERS
+        return self._motor_frame(
+            ctx,
+            parameters.default_position,
+            parameters.kp,
+            parameters.kd,
+            layout=parameters.layout,
+        )
 
     def get_entry_frame(self, ctx: RobotControlContext) -> MotorFrame:
         return self._frame(ctx)

@@ -8,8 +8,10 @@ from typing import TYPE_CHECKING
 import numpy as np
 from numpy.typing import NDArray
 
-from bxi_example_py_elf3.policies import HumanoidGaitPolicyLiteIsaaclab
-from bxi_example_py_elf3.policies.joints import ELF3_POLICY_JOINTS
+from bxi_example_py_elf3.policies.joints import (
+    ELF3_ISAAC_PARAMETERS,
+    ELF3_POLICY_JOINTS,
+)
 from bxi_example_py_elf3.framework.mod_api import ResourceHandle
 from bxi_example_py_elf3.framework.mod_api import RobotControlState
 from bxi_example_py_elf3.framework.mod_api import StateBehavior
@@ -24,6 +26,13 @@ if TYPE_CHECKING:
 
 
 APPLAUSE_ARM_JOINTS = ELF3_POLICY_JOINTS.names[-14:]
+HALF_LOWER_HOLD_JOINTS = (
+    "waist_y_joint",
+    "waist_x_joint",
+    "waist_z_joint",
+    "l_hip_y_joint",
+    "r_hip_y_joint",
+)
 
 
 @dataclass(frozen=True)
@@ -51,61 +60,74 @@ class ApplauseState(RobotControlState, EntryFrameProvider, RunningFrameProvider)
         self,
         name: str,
         state_id: int,
-        policy: ResourceHandle[HumanoidGaitPolicyLiteIsaaclab],
         clip: ResourceHandle[PlaybackClip],
     ) -> None:
-        super().__init__(name, state_id, resources=(policy, clip))
-        self._policy = policy
+        super().__init__(name, state_id, resources=(clip,))
         self._clip = clip
         self.frame = 0.0
         self.playing = True
-        self._arm_output_indices = None
-        self._policy_output_layout = None
-
-    @property
-    def policy(self) -> HumanoidGaitPolicyLiteIsaaclab:
-        return self._policy.get()
+        layout = ELF3_ISAAC_PARAMETERS.layout
+        self._arm_output_indices = np.fromiter(
+            (layout.index(name) for name in APPLAUSE_ARM_JOINTS),
+            dtype=np.intp,
+            count=len(APPLAUSE_ARM_JOINTS),
+        )
+        self._lower_output_indices = np.fromiter(
+            (layout.index(name) for name in HALF_LOWER_HOLD_JOINTS),
+            dtype=np.intp,
+            count=len(HALF_LOWER_HOLD_JOINTS),
+        )
+        self._target_position = ELF3_ISAAC_PARAMETERS.default_position.copy()
 
     @property
     def clip(self) -> PlaybackClip:
         return self._clip.get()
+
+    def is_available(self, ctx: RobotControlContext) -> bool:
+        robot_names = set(ctx.robot_layout.names)
+        if not set(HALF_LOWER_HOLD_JOINTS).issubset(robot_names):
+            return False
+        indices = [ctx.robot_layout.index(name) for name in HALF_LOWER_HOLD_JOINTS]
+        return bool(np.isfinite(ctx.robot_joints.position[indices]).all())
 
     def on_prepare(
         self, ctx: RobotControlContext, from_state: StateBehavior[RobotControlContext]
     ) -> None:
         self.frame = 0.0
         self.playing = True
-        ctx.preheat_model(self.policy, command=self.get_cmd_vel(ctx))
-        layout = self.policy.output.joints.layout
-        if self._policy_output_layout is not layout:
-            self._arm_output_indices = np.fromiter(
-                (layout.index(name) for name in APPLAUSE_ARM_JOINTS),
-                dtype=np.intp,
-                count=len(APPLAUSE_ARM_JOINTS),
-            )
-            self._policy_output_layout = layout
+        if not self.is_available(ctx):
+            raise ValueError("cannot enter applause without finite half-body feedback")
+        lower_robot_indices = np.fromiter(
+            (ctx.robot_layout.index(name) for name in HALF_LOWER_HOLD_JOINTS),
+            dtype=np.intp,
+            count=len(HALF_LOWER_HOLD_JOINTS),
+        )
+        lower_position = ctx.robot_joints.position[lower_robot_indices]
+        self._target_position[self._lower_output_indices] = lower_position
 
     def on_enter(self, ctx: RobotControlContext) -> None:
         self.frame = 0.0
         self.playing = True
 
     def get_entry_frame(self, ctx: RobotControlContext) -> MotorFrame:
-        frame = self._motor_frame_from_target(ctx, self.policy.output.joints)
-        frame.qpos[self._arm_output_indices] = self.clip.positions[0]
-        return frame
+        return self._frame(ctx, 0)
+
+    def _frame(self, ctx: RobotControlContext, index: int) -> MotorFrame:
+        self._target_position[self._arm_output_indices] = self.clip.positions[index]
+        parameters = ELF3_ISAAC_PARAMETERS
+        return self._motor_frame(
+            ctx,
+            self._target_position,
+            parameters.kp,
+            parameters.kd,
+            layout=parameters.layout,
+        )
 
     def sample_running_frame(
         self, ctx: RobotControlContext, dt: float, *, advance: bool
     ) -> MotorFrame:
-        self.get_cmd_vel(ctx)
-        output = self.policy.step(
-            ctx.inference_frame,
-            dt,
-            advance=advance,
-        )
-        frame = self._motor_frame_from_target(ctx, output.joints)
         index = min(int(self.frame), self.clip.positions.shape[0] - 1)
-        frame.qpos[self._arm_output_indices] = self.clip.positions[index]
+        frame = self._frame(ctx, index)
         if self.playing and advance:
             self.frame += self.clip.fps * dt
         return frame
@@ -116,7 +138,7 @@ class ApplauseState(RobotControlState, EntryFrameProvider, RunningFrameProvider)
             return
         if self.frame >= self.clip.positions.shape[0]:
             ctx.request_state(
-                "com.bxi.basic_actions/normal",
+                "com.bxi.basic_actions/pd_brake",
                 trigger="applause_finished",
                 transition={"profile": "dual_running_blend", "duration": 1.0},
             )

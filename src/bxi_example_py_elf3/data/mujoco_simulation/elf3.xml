@@ -59,7 +59,7 @@
   </asset>
 
   <worldbody>
-    <body name="torso_link" childclass="elf3" pos="0 0 1.1">
+    <body name="torso_link" childclass="elf3" pos="0 0 1.5">
       <inertial pos="0.00248104 -0.00011985 -0.0213511" mass="11.66386158" fullinertia="0.16938518 0.13849556 0.07231662 -0.00016255 0.00108159 -8.304e-05"/>
       <joint name="world_joint" type="free"/>
       <geom rgba="0.75294 0.75294 0.75294 1" mesh="torso_link"/>
@@ -300,6 +300,11 @@
     <general name="head_z_joint" joint="head_z_joint" ctrllimited="false" forcelimited="true" forcerange="-21 21" biastype="affine" gainprm="16.7467" biasprm="0 -16.7467 -1.06613"/>
     <general name="head_y_joint" joint="head_y_joint" ctrllimited="false" forcelimited="true" forcerange="-21 21" biastype="affine" gainprm="16.7467" biasprm="0 -16.7467 -1.06613"/>
   </actuator> -->
+
+  <!-- Suspend the torso while leaving the free joint and all limb joints available to the simulator. -->
+  <equality>
+    <weld body1="torso_link" body2="world"/>
+  </equality>
 
   <actuator>
     <motor name="waist_y_joint" joint="waist_y_joint" gear="1" ctrllimited='true' ctrlrange='-100 100'/>

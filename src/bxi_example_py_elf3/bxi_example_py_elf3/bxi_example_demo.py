@@ -37,6 +37,9 @@ from bxi_example_py_elf3.framework.joints import (
     NamedJointCommandOverride,
 )
 from bxi_example_py_elf3.framework.mod_api import MotorFrame
+from bxi_example_py_elf3.framework.mod_api.hardware_launch import (
+    DEFAULT_EXTRA_MOTOR_DISABLE_MASK,
+)
 from bxi_example_py_elf3.imu_freshness import ImuStampObserver
 from bxi_example_py_elf3.framework.platform import (
     NamedJointStateSource,
@@ -85,6 +88,11 @@ ELF3_RESET_JOINTS = JointLayout(
 
 dof_num = ELF3_RESET_JOINTS.dof_num
 joint_name = ELF3_RESET_JOINTS.names
+CONNECTED_JOINTS = frozenset(
+    name
+    for index, name in enumerate(joint_name)
+    if not DEFAULT_EXTRA_MOTOR_DISABLE_MASK & (1 << index)
+)
 
 # The current ELF3 state message contains two head joints that the original
 # 29-joint policies do not command. A future 31-joint policy overrides these
@@ -355,13 +363,6 @@ class BxiExample(Node):
                 return False
             self.get_logger().info("robot reset step 2 requested")
             self.step = 2
-            if self.topic_prefix.find("simulation") != -1:
-                self.runtime.request_state(
-                    "com.bxi.basic_actions/pd_brake", trigger="AutoPdbreak"
-                )
-                self.runtime.request_state(
-                    "com.bxi.basic_actions/normal", trigger="AutoRelease"
-                )
             return False
         with self.lock_in:
             return self._joint_received
@@ -473,15 +474,20 @@ class BxiExample(Node):
             permitted=override_permitted,
         )
 
+        command_indices = [
+            index
+            for index, name in enumerate(frame.layout.names)
+            if name in CONNECTED_JOINTS
+        ]
         msg = bxiMsg.ActuatorCmds()
         msg.header.frame_id = robot_name
         msg.header.stamp = self.get_clock().now().to_msg()
-        msg.actuators_name = frame.layout.names
-        msg.pos = frame.qpos.tolist()
-        msg.vel = frame.vel.tolist()
-        msg.torque = frame.torque.tolist()
-        msg.kp = frame.kp.tolist()
-        msg.kd = frame.kd.tolist()
+        msg.actuators_name = [frame.layout.names[index] for index in command_indices]
+        msg.pos = frame.qpos[command_indices].tolist()
+        msg.vel = frame.vel[command_indices].tolist()
+        msg.torque = frame.torque[command_indices].tolist()
+        msg.kp = frame.kp[command_indices].tolist()
+        msg.kd = frame.kd[command_indices].tolist()
         self.act_pub.publish(msg)
 
     def publish_state_machine_info(self):

@@ -3,7 +3,7 @@ id: com.bxi.back_flip
 name: 后空翻
 version: 1.0.0
 api: ">=4,<5"
-enable: true
+enable: false
 entrypoint: plugin:create_mod
 visibility: protected
 requires:
