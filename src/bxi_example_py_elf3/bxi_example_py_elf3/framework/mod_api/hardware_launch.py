@@ -9,6 +9,7 @@ DEFAULT_HARDWARE_CONFIG = {
     "hardware_config/motor_disable": 0x60000000,
 }
 HEAD_MOTOR_DISABLE_MASK = 0x60000000
+DEFAULT_EXTRA_MOTOR_DISABLE_MASK = 0x7FFFFFFF & ~0x1FFF820F
 
 
 def declare_hardware_launch_arguments() -> list[Any]:
@@ -34,6 +35,14 @@ def declare_hardware_launch_arguments() -> list[Any]:
             default_value="auto",
             description="Enable the hardware IMU reader, or auto-read hardware_config/imu.",
         ),
+        DeclareLaunchArgument(
+            "motor_disable_mask",
+            default_value=f"0x{DEFAULT_EXTRA_MOTOR_DISABLE_MASK:08X}",
+            description=(
+                "Additional disabled motors (default: disconnected motors; "
+                "0x7FFFFFFF disables all motors)."
+            ),
+        ),
     ]
 
 
@@ -45,10 +54,14 @@ def hardware_node_from_context(context) -> Any:
     config_file = LaunchConfiguration("robot_config_file").perform(context)
     enable_head_arg = LaunchConfiguration("enable_head").perform(context)
     enable_imu_arg = LaunchConfiguration("enable_imu").perform(context)
+    motor_disable_mask_arg = LaunchConfiguration("motor_disable_mask").perform(context)
     robot_config = _load_robot_config(config_file)
     enable_head = _resolve_enable_head(enable_head_arg, robot_config)
     enable_imu = _resolve_enable_imu(enable_imu_arg, robot_config)
-    hardware_config = _resolve_hardware_config(robot_config, enable_head, enable_imu)
+    extra_motor_disable_mask = _parse_motor_disable_mask(motor_disable_mask_arg)
+    hardware_config = _resolve_hardware_config(
+        robot_config, enable_head, enable_imu, extra_motor_disable_mask
+    )
     package_name = "hardware_elf3"
     package_prefix = get_package_prefix(package_name)
     executable_path = os.path.join(package_prefix, "lib", package_name, package_name)
@@ -60,6 +73,7 @@ def hardware_node_from_context(context) -> Any:
         f"executable={executable_path}, "
         f"imu={'enabled' if enable_imu else 'disabled'}, "
         "imu_port=/dev/ttyIMU, "
+        f"extra_motor_disable_mask=0x{extra_motor_disable_mask:08X}, "
         f"motor_disable=0x{hardware_config['hardware_config/motor_disable']:08X}, "
         f"config_file={config_file or '<none>'}"
     )
@@ -138,6 +152,7 @@ def _resolve_hardware_config(
     robot_config: dict[str, Any],
     enable_head: bool,
     enable_imu: bool,
+    extra_motor_disable_mask: int = 0,
 ) -> dict[str, Any]:
     hardware_config = dict(DEFAULT_HARDWARE_CONFIG)
     hardware_config.update(_hardware_config_from_robot_config(robot_config))
@@ -150,8 +165,19 @@ def _resolve_hardware_config(
         motor_disable &= ~HEAD_MOTOR_DISABLE_MASK
     else:
         motor_disable |= HEAD_MOTOR_DISABLE_MASK
+    motor_disable |= extra_motor_disable_mask
     hardware_config["hardware_config/motor_disable"] = motor_disable
     return hardware_config
+
+
+def _parse_motor_disable_mask(value: str | int) -> int:
+    try:
+        mask = int(value.strip(), 0) if isinstance(value, str) else int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"invalid motor_disable_mask={value!r}") from exc
+    if not 0 <= mask <= 0x7FFFFFFF:
+        raise ValueError(f"motor_disable_mask out of range: {value!r}")
+    return mask
 
 
 def _resolve_enable_imu(enable_imu_arg: str, robot_config: dict[str, Any]) -> bool:
