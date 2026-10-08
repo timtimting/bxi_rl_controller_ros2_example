@@ -386,18 +386,25 @@ outputs:
             - released: trigger.right_event
           - [keyboard.normal_run_event]
 
-    # LB+Y（键盘 4）：AMP 奔跑 amp_run。
+    # LB+RB+Y：进入悬挂跑步测试待机。
     - output: btn_8=1
       when:
-        any:
-          - - shoulder.left_event
-            - button.y_event
-            - released: shoulder.right_event
-            - released: trigger.left_event
-            - released: trigger.right_event
-          - [keyboard.amp_run_event]
+        - shoulder.left_event
+        - shoulder.right_event
+        - button.y_event
+        - released: trigger.left_event
+        - released: trigger.right_event
 
-    # X：当前动作暂停/继续；在 SONIC 状态中用于重置朝向对齐。
+    # LB+RB+B：退出悬挂跑步测试并进入零力矩。
+    - output: btn_8=2
+      when:
+        - shoulder.left_event
+        - shoulder.right_event
+        - button.b_event
+        - released: trigger.left_event
+        - released: trigger.right_event
+
+    # X：鼓掌暂停/继续；悬挂跑步待机时启动，跑步中受控结束。
     - output: btn_9=1
       when:
         - button.x_event
@@ -502,18 +509,8 @@ outputs:
             - released: trigger.right_event
           - [keyboard.sonic_event]
 
-    # LB+RB+Y：任意动作播放 any_motion。
-    - output: btn_10=10
-      when:
-        any:
-          - - shoulder.left_event
-            - shoulder.right_event
-            - button.y_event
-            - released: trigger.left_event
-            - released: trigger.right_event
-
     # 预留组合：四个辅助键 LB/RB/LT/RT 的全部状态 × A/B/X/Y。
-    # 已有映射保持 btn_1..btn_9 和 btn_10=1..10 不变；缺失组合使用 btn_10=11..54。
+    # LB+RB+Y/B 已用于悬挂跑步模式；其余缺失组合使用 btn_10=11..54。
     # 约定：LB=shoulder.left，RB=shoulder.right，LT=trigger.left，RT=trigger.right。
 
     # A
@@ -540,15 +537,6 @@ outputs:
         - shoulder.left_event
         - shoulder.right_event
         - button.a_event
-        - released: trigger.left_event
-        - released: trigger.right_event
-
-    # LB+RB+B
-    - output: btn_10=14
-      when:
-        - shoulder.left_event
-        - shoulder.right_event
-        - button.b_event
         - released: trigger.left_event
         - released: trigger.right_event
 

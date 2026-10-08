@@ -142,13 +142,19 @@ def test_half_body_mod_exposes_only_requested_states():
             "com.bxi.basic_actions/pd_brake",
             "com.bxi.basic_actions/imu_protection",
             "com.bxi.basic_actions/applause",
+            "com.bxi.suspended_running/idle",
+            "com.bxi.suspended_running/running",
         }
-        assert {mod.id for mod in runtime.mods} == {"com.bxi.basic_actions"}
+        assert {mod.id for mod in runtime.mods} == {
+            "com.bxi.basic_actions",
+            "com.bxi.suspended_running",
+        }
         assert len(states["com.bxi.basic_actions/applause"].required_resources) == 1
+        assert len(states["com.bxi.suspended_running/running"].required_resources) == 1
         assert all(
             not state.required_resources
             for name, state in states.items()
-            if not name.endswith("/applause")
+            if not name.endswith(("/applause", "/running"))
         )
     finally:
         runtime.close()
