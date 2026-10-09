@@ -2,6 +2,8 @@
 
 [English](./README.en.md)
 
+[ELF3 半身演示操作说明](./README.half_demo.zh-CN.md)
+
 ## 项目概览
 
 本仓库提供 BXI 机器人控制器开发示例框架，包含：
