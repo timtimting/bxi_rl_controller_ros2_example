@@ -307,9 +307,9 @@ void test_all_auxiliary_and_face_button_combinations_are_reserved()
     // Rows use the LB/RB/LT/RT bit mask; columns use A/B/X/Y.
     const ExpectedOutput expected[16][4] = {
         {{10, 11}, {1, 2}, {9, 1}, {10, 12}},
-        {{6, 1}, {7, 1}, {5, 1}, {0, 0}},
+        {{8, 3}, {7, 1}, {5, 1}, {8, 1}},
         {{2, 1}, {3, 1}, {1, 1}, {4, 1}},
-        {{10, 13}, {8, 2}, {10, 9}, {8, 1}},
+        {{10, 13}, {0, 0}, {10, 9}, {0, 0}},
         {{10, 3}, {10, 4}, {10, 1}, {10, 2}},
         {{10, 15}, {10, 16}, {10, 17}, {10, 18}},
         {{10, 23}, {10, 24}, {10, 25}, {10, 26}},
@@ -400,6 +400,30 @@ void test_xbox_elrs_crsf_buttons_use_bit_packed_sources()
         communication::msg::MotionCommands message;
         mapper.fill_message(message);
         expect(message.btn_1 == 1);
+    }
+
+    {
+        InputMapper mapper(config);
+        mapper.set_signals({
+            {"crsf.xbox.button.lb", 1.0},
+            {"crsf.xbox.button.b", 1.0},
+        });
+        communication::msg::MotionCommands message;
+        mapper.fill_message(message);
+        expect(message.btn_7 == 1);
+        expect(message.btn_8 == 0);
+    }
+
+    {
+        InputMapper mapper(config);
+        mapper.set_signals({
+            {"crsf.xbox.button.lb", 1.0},
+            {"crsf.xbox.button.y", 1.0},
+        });
+        communication::msg::MotionCommands message;
+        mapper.fill_message(message);
+        expect(message.btn_7 == 0);
+        expect(message.btn_8 == 1);
     }
 }
 

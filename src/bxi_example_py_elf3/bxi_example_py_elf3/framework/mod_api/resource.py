@@ -29,9 +29,18 @@ class ResourceLoadContext:
     mod_root: Path
 
     def asset(self, relative_path: str) -> Path:
-        path = (self.mod_root / relative_path).resolve()
+        path = self.mod_root / relative_path
         assets_root = (self.mod_root / "assets").resolve()
-        if assets_root not in path.parents:
+        parent = path.parent.resolve()
+        resolved = path.resolve()
+        in_assets = assets_root == parent or assets_root in parent.parents
+        if path.is_symlink():
+            # colcon --symlink-install links each asset through build/ to src/.
+            expected_tail = ("mods", self.mod_id, *Path(relative_path).parts)
+            in_assets = in_assets and resolved.parts[-len(expected_tail):] == expected_tail
+        else:
+            in_assets = in_assets and assets_root in resolved.parents
+        if not in_assets:
             raise ValueError(
                 f"resource in '{self.mod_id}' must come from its assets folder: "
                 f"{relative_path}"

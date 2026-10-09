@@ -9,10 +9,10 @@ from bxi_example_py_elf3.framework.mod_api import (
     ResourceLoadContext,
 )
 
-from .state import RunningIdleState, RunningState, RunningSession, load_trajectory
+from .state import ArmRangeState, RunningState, RunningSession, load_trajectory
 
 
-TRAJECTORY = ResourceKey[np.ndarray]("com.bxi.suspended_running/trajectory")
+TRAJECTORY = ResourceKey[np.ndarray]("com.bxi.half_demo/trajectory")
 
 
 def _load_trajectory(context: ResourceLoadContext) -> np.ndarray:
@@ -25,9 +25,9 @@ def create_mod(context: ModLoadContext) -> ModDefinition:
     session = RunningSession()
     return ModDefinition(
         state_factories={
-            "idle": lambda state: RunningIdleState(state.name, state.state_id, session),
             "running": lambda state: RunningState(
                 state.name, state.state_id, session, trajectory
             ),
+            "arm_range": lambda state: ArmRangeState(state.name, state.state_id, session),
         }
     )

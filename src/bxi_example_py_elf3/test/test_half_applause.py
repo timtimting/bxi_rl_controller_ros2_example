@@ -142,15 +142,15 @@ def test_half_body_mod_exposes_only_requested_states():
             "com.bxi.basic_actions/pd_brake",
             "com.bxi.basic_actions/imu_protection",
             "com.bxi.basic_actions/applause",
-            "com.bxi.suspended_running/idle",
-            "com.bxi.suspended_running/running",
+            "com.bxi.half_demo/running",
+            "com.bxi.half_demo/arm_range",
         }
         assert {mod.id for mod in runtime.mods} == {
             "com.bxi.basic_actions",
-            "com.bxi.suspended_running",
+            "com.bxi.half_demo",
         }
         assert len(states["com.bxi.basic_actions/applause"].required_resources) == 1
-        assert len(states["com.bxi.suspended_running/running"].required_resources) == 1
+        assert len(states["com.bxi.half_demo/running"].required_resources) == 1
         assert all(
             not state.required_resources
             for name, state in states.items()

@@ -364,18 +364,21 @@ outputs:
             - released: trigger.right_event
           - [keyboard.dance_event]
 
-    # LB+A（键盘 2）：恢复站立 recover。
+    # LB+A：保留 btn_8=3 供其他模式使用，半身演示不再绑定。
+    - output: btn_8=3
+      when:
+        - shoulder.left_event
+        - button.a_event
+        - released: shoulder.right_event
+        - released: trigger.left_event
+        - released: trigger.right_event
+
+    # 键盘 2 保留原恢复站立事件。
     - output: btn_6=1
       when:
-        any:
-          - - shoulder.left_event
-            - button.a_event
-            - released: shoulder.right_event
-            - released: trigger.left_event
-            - released: trigger.right_event
-          - [keyboard.recover_event]
+        - keyboard.recover_event
 
-    # LB+B（键盘 5）：普通奔跑 normal_run。
+    # LB+B（键盘 5）：半身演示从初始姿态进入悬挂跑步。
     - output: btn_7=1
       when:
         any:
@@ -386,25 +389,16 @@ outputs:
             - released: trigger.right_event
           - [keyboard.normal_run_event]
 
-    # LB+RB+Y：进入悬挂跑步测试待机。
+    # LB+Y：从零位模式进入双臂行程测试；测试中再次按下可停止。
     - output: btn_8=1
       when:
         - shoulder.left_event
-        - shoulder.right_event
         - button.y_event
+        - released: shoulder.right_event
         - released: trigger.left_event
         - released: trigger.right_event
 
-    # LB+RB+B：退出悬挂跑步测试并进入零力矩。
-    - output: btn_8=2
-      when:
-        - shoulder.left_event
-        - shoulder.right_event
-        - button.b_event
-        - released: trigger.left_event
-        - released: trigger.right_event
-
-    # X：鼓掌暂停/继续；悬挂跑步待机时启动，跑步中受控结束。
+    # X：鼓掌暂停/继续；悬挂跑步中受控结束。
     - output: btn_9=1
       when:
         - button.x_event
@@ -510,7 +504,7 @@ outputs:
           - [keyboard.sonic_event]
 
     # 预留组合：四个辅助键 LB/RB/LT/RT 的全部状态 × A/B/X/Y。
-    # LB+RB+Y/B 已用于悬挂跑步模式；其余缺失组合使用 btn_10=11..54。
+    # 半身演示使用 LB+B/Y，LB+A 保留给其他模式；其余列出的组合使用 btn_10=11..54。
     # 约定：LB=shoulder.left，RB=shoulder.right，LT=trigger.left，RT=trigger.right。
 
     # A
@@ -531,7 +525,7 @@ outputs:
         - released: trigger.left_event
         - released: trigger.right_event
 
-    # LB+RB+A
+    # LB+RB+A：预留。
     - output: btn_10=13
       when:
         - shoulder.left_event
