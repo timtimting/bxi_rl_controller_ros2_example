@@ -93,6 +93,7 @@ CONNECTED_JOINTS = frozenset(
     for index, name in enumerate(joint_name)
     if not DEFAULT_EXTRA_MOTOR_DISABLE_MASK & (1 << index)
 )
+SIMULATION_JOINTS = CONNECTED_JOINTS | {"head_z_joint", "head_y_joint"}
 
 # The current ELF3 state message contains two head joints that the original
 # 29-joint policies do not command. A future 31-joint policy overrides these
@@ -474,10 +475,15 @@ class BxiExample(Node):
             permitted=override_permitted,
         )
 
+        command_joint_names = (
+            SIMULATION_JOINTS
+            if self.topic_prefix.startswith("simulation/")
+            else CONNECTED_JOINTS
+        )
         command_indices = [
             index
             for index, name in enumerate(frame.layout.names)
-            if name in CONNECTED_JOINTS
+            if name in command_joint_names
         ]
         msg = bxiMsg.ActuatorCmds()
         msg.header.frame_id = robot_name
