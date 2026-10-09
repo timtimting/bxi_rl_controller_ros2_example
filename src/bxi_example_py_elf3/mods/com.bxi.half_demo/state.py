@@ -66,7 +66,17 @@ ARM_COLLISION_RANGES_DEG = {
     "shoulder_x_joint": (-5.9, 175.0),
     "shoulder_y_joint": (-165.0, 165.0),
 }
+HIP_WAIST_SWEEPS_DEG = (
+    (("l_hip_y_joint", "r_hip_y_joint"), 20.0),
+    (("waist_z_joint",), 30.0),
+    (("waist_x_joint",), 10.0),
+    (("waist_y_joint",), 15.0),
+)
 ARM_ZERO = np.zeros(TEST_LAYOUT.dof_num, dtype=np.float32)
+HIP_INDICES = np.asarray(
+    [TEST_LAYOUT.index(name) for name in ("l_hip_y_joint", "r_hip_y_joint")],
+    dtype=np.intp,
+)
 
 
 def arm_range_segments() -> tuple:
@@ -126,6 +136,32 @@ def arm_range_segments() -> tuple:
             )
             duration = max(1.5, 1.875 * travel_deg / RETURN_SPEED_DEG_S)
             segments.append((previous.copy(), target.copy(), motion_names, duration))
+            previous = target
+    return tuple(segments)
+
+
+ARM_SEGMENT_COUNT = len(arm_range_segments())
+
+
+def half_range_segments() -> tuple:
+    segments = list(arm_range_segments())
+    previous = segments[-1][1].copy()
+    for names, amplitude_deg in HIP_WAIST_SWEEPS_DEG:
+        indices = tuple(TEST_LAYOUT.index(name) for name in names)
+        amplitude = math.radians(amplitude_deg)
+        for name in names:
+            low, high = LIMITS[name]
+            if -amplitude < low + LIMIT_MARGIN_RAD or amplitude > high - LIMIT_MARGIN_RAD:
+                raise ValueError(f"unsafe half-body sweep range for {name}")
+        for angle in (-amplitude, amplitude, 0.0):
+            target = ARM_ZERO.copy()
+            target[list(indices)] = angle
+            travel_deg = max(
+                abs(math.degrees(float(target[index] - previous[index])))
+                for index in indices
+            )
+            duration = max(1.5, 1.875 * travel_deg / RETURN_SPEED_DEG_S)
+            segments.append((previous.copy(), target.copy(), names, duration))
             previous = target
     return tuple(segments)
 
@@ -394,9 +430,11 @@ class RunningState(SuspendedRunBase):
 
 
 class ArmRangeState(SuspendedRunBase):
+    """Sweep connected arms, then hip pitch and waist without other leg motors."""
+
     def __init__(self, name: str, state_id: int, session: RunningSession) -> None:
         super().__init__(name, state_id, session, INITIAL_POS)
-        self.segments = arm_range_segments()
+        self.segments = half_range_segments()
         self.entry_start = ARM_ZERO.copy()
         self.entry_duration = self.segments[0][3]
         self.segment_index = 0
@@ -423,6 +461,23 @@ class ArmRangeState(SuspendedRunBase):
             return
         self.last_command[:] = measured
         self.entry_start[:] = measured
+        segments = list(half_range_segments())
+        for group_index, (names, _) in enumerate(HIP_WAIST_SWEEPS_DEG):
+            indices = np.asarray([TEST_LAYOUT.index(name) for name in names], dtype=np.intp)
+            first_segment = ARM_SEGMENT_COUNT + 3 * group_index
+            held = measured[indices]
+            for start, target, _, _ in segments[:first_segment]:
+                start[indices] = held
+                target[indices] = held
+            start, target, motion_names, duration = segments[first_segment]
+            start[indices] = held
+            travel_deg = max(
+                abs(math.degrees(float(target[index] - start[index])))
+                for index in indices
+            )
+            duration = max(duration, 1.875 * travel_deg / RETURN_SPEED_DEG_S)
+            segments[first_segment] = (start, target, motion_names, duration)
+        self.segments = tuple(segments)
         first_target = self.segments[0][1]
         first_names = self.segments[0][2]
         first_travel_deg = max(
@@ -462,7 +517,8 @@ class ArmRangeState(SuspendedRunBase):
                 if error > math.radians(5.0):
                     self._fault(
                         ctx,
-                        f"arm range segment {self.segment_index + 1} tracking error "
+                        f"half-body range segment {self.segment_index + 1} "
+                        f"({', '.join(names)}) tracking error "
                         f"{math.degrees(error):.2f} deg",
                     )
                     return

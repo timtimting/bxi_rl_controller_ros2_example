@@ -30,7 +30,7 @@ states:
     manifest: {label: 悬挂跑步, priority: 900, group: Tests, confirm: true}
     inference_hz: 50.0
   arm_range:
-    manifest: {label: 双臂行程测试, priority: 890, group: Tests, confirm: true}
+    manifest: {label: 半身行程测试, priority: 890, group: Tests, confirm: true}
     inference_hz: 50.0
 
 routes:
@@ -41,7 +41,7 @@ routes:
 
 actions:
   - {from: running, event: running, action: stop, manifest: {label: 停止悬挂跑步}}
-  - {from: arm_range, event: arm_range, action: stop, manifest: {label: 停止双臂行程测试}}
+  - {from: arm_range, event: arm_range, action: stop, manifest: {label: 停止半身行程测试}}
   - {from: running, event: initial_pose, action: to_initial_pose, manifest: {label: 回到初始姿态}}
   - {from: running, event: zero_pose, action: to_zero_pose, manifest: {label: 回到零位模式}}
   - {from: arm_range, event: initial_pose, action: to_initial_pose, manifest: {label: 回到初始姿态}}

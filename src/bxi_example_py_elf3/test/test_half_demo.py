@@ -155,6 +155,7 @@ def test_remote_combinations_and_state_routes():
     assert config["events"]["zero_pose"] == {"slot": "btn_4", "value": 1}
     assert config["events"]["running"] == {"slot": "btn_9", "value": 1}
     assert config["events"]["arm_range"] == {"slot": "btn_8", "value": 1}
+    assert config["states"]["arm_range"]["manifest"]["label"] == "半身行程测试"
     assert all(state["inference_hz"] == 50.0 for state in config["states"].values())
     routes = {
         (route["from"], route["event"], route["to"])
@@ -541,6 +542,40 @@ def test_arm_range_plan_only_moves_arms_inside_software_limits():
         assert np.all(target <= running.POSITION_MAX - running.LIMIT_MARGIN_RAD)
 
 
+def test_half_range_plan_sweeps_hips_then_waist_without_other_leg_joints():
+    segments = running.half_range_segments()
+    assert running.ARM_SEGMENT_COUNT == 27
+    assert len(segments) == 39
+    expected_groups = (
+        (("l_hip_y_joint", "r_hip_y_joint"), 20.0),
+        (("waist_z_joint",), 30.0),
+        (("waist_x_joint",), 10.0),
+        (("waist_y_joint",), 15.0),
+    )
+    for group_index, (names, amplitude_deg) in enumerate(expected_groups):
+        first = running.ARM_SEGMENT_COUNT + 3 * group_index
+        group = segments[first:first + 3]
+        assert [segment[2] for segment in group] == [names] * 3
+        for segment, angle in zip(group, (-amplitude_deg, amplitude_deg, 0.0)):
+            start, target, motion_names, duration = segment
+            for name in names:
+                index = running.TEST_LAYOUT.index(name)
+                assert target[index] == pytest.approx(np.deg2rad(angle), abs=1e-6)
+                peak_speed = 1.875 * abs(np.rad2deg(target[index] - start[index])) / duration
+                assert peak_speed <= running.RETURN_SPEED_DEG_S + 1e-4
+            inactive = [
+                running.TEST_LAYOUT.index(name)
+                for name in running.JOINT_NAMES if name not in motion_names
+            ]
+            np.testing.assert_allclose(target[inactive], 0.0)
+            assert np.all(target >= running.POSITION_MIN + running.LIMIT_MARGIN_RAD)
+            assert np.all(target <= running.POSITION_MAX - running.LIMIT_MARGIN_RAD)
+    assert not any(
+        any(part in name for part in ("knee", "ankle", "hip_x", "hip_z"))
+        for _, _, names, _ in segments for name in names
+    )
+
+
 def test_arm_range_rejects_nonzero_start_pose(monkeypatch):
     monkeypatch.setattr(running, "time", SimpleNamespace(monotonic=lambda: 100.0))
     ctx = Context()
@@ -570,7 +605,88 @@ def test_arm_range_first_command_starts_from_measured_pose(monkeypatch):
     expected = measured_start + running.minimum_jerk_progress(
         0.02 / state.entry_duration
     ) * (state.segments[0][1] - measured_start)
+    expected[running.HIP_INDICES] = measured_start[running.HIP_INDICES]
     np.testing.assert_allclose(ctx.frame.qpos[running.PARAMETER_INDICES], expected, atol=1e-6)
+
+
+def test_arm_range_keeps_hip_pose_during_arm_segments(monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr(running, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    ctx = Context()
+    ctx.robot_joints.position[running.HIP_INDICES] = (0.04, -0.05)
+    state = running.ArmRangeState(running.ARM_RANGE, 3, running.RunningSession())
+    _bind_logger(state)
+    assert state.is_available(ctx)
+    state.on_enter(ctx)
+
+    for _ in range(100):
+        now[0] += 0.02
+        ctx.robot_joints.timestamp_ns += 1
+        state.on_update(ctx, 0.02)
+        np.testing.assert_allclose(
+            ctx.frame.qpos[running.PARAMETER_INDICES][running.HIP_INDICES],
+            (0.04, -0.05),
+            atol=1e-6,
+        )
+        _follow_connected_command(ctx)
+
+    assert state.segment_index > 0
+
+
+def test_hip_sweep_starts_smoothly_from_held_arm_pose(monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr(running, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    ctx = Context()
+    ctx.robot_joints.position[running.HIP_INDICES] = (0.04, -0.05)
+    state = running.ArmRangeState(running.ARM_RANGE, 3, running.RunningSession())
+    _bind_logger(state)
+    state.on_enter(ctx)
+    start, target, names, duration = state.segments[running.ARM_SEGMENT_COUNT]
+    np.testing.assert_allclose(start[running.HIP_INDICES], (0.04, -0.05), atol=1e-6)
+    assert names == ("l_hip_y_joint", "r_hip_y_joint")
+
+    state.segment_index = running.ARM_SEGMENT_COUNT
+    now[0] += 0.02
+    ctx.robot_joints.timestamp_ns += 1
+    state.on_update(ctx, 0.02)
+    expected = start + running.minimum_jerk_progress(0.02 / duration) * (target - start)
+    np.testing.assert_allclose(ctx.frame.qpos[running.PARAMETER_INDICES], expected, atol=1e-6)
+
+
+def test_each_hip_and_waist_joint_waits_for_its_own_sweep(monkeypatch):
+    monkeypatch.setattr(running, "time", SimpleNamespace(monotonic=lambda: 100.0))
+    ctx = Context()
+    held = {
+        "l_hip_y_joint": 0.04,
+        "r_hip_y_joint": -0.05,
+        "waist_z_joint": 0.06,
+        "waist_x_joint": -0.04,
+        "waist_y_joint": 0.03,
+    }
+    for name, value in held.items():
+        ctx.robot_joints.position[running.TEST_LAYOUT.index(name)] = value
+    state = running.ArmRangeState(running.ARM_RANGE, 3, running.RunningSession())
+    _bind_logger(state)
+    state.on_enter(ctx)
+
+    for group_index, (names, _) in enumerate(running.HIP_WAIST_SWEEPS_DEG):
+        first = running.ARM_SEGMENT_COUNT + 3 * group_index
+        for name in names:
+            index = running.TEST_LAYOUT.index(name)
+            assert all(
+                segment[1][index] == pytest.approx(held[name], abs=1e-6)
+                for segment in state.segments[:first]
+            )
+            assert state.segments[first][0][index] == pytest.approx(held[name], abs=1e-6)
+    for previous, current in zip(state.segments, state.segments[1:]):
+        np.testing.assert_allclose(previous[1], current[0], atol=1e-6)
+    for segment_index, (start, target, _, duration) in enumerate(state.segments):
+        if segment_index == 0:
+            start, duration = state.entry_start, state.entry_duration
+        travel_deg = float(np.max(np.abs(np.rad2deg(target - start))))
+        assert 1.875 * travel_deg / duration <= running.RETURN_SPEED_DEG_S + 1e-4
+        assert np.all(target >= running.POSITION_MIN + running.LIMIT_MARGIN_RAD)
+        assert np.all(target <= running.POSITION_MAX - running.LIMIT_MARGIN_RAD)
 
 
 def test_controlled_return_respects_range_speed(monkeypatch):
@@ -640,6 +756,48 @@ def test_arm_range_stop_and_tracking_fault(monkeypatch):
     state.on_update(ctx, 0.02)
     assert ctx.requested[-1][0] == running.ZERO_TORQUE
     assert "tracking error" in errors[-1]
+
+
+def test_arm_range_stop_returns_held_hips_to_zero(monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr(running, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    ctx = Context()
+    ctx.robot_joints.position[running.HIP_INDICES] = (0.04, -0.05)
+    state = running.ArmRangeState(running.ARM_RANGE, 3, running.RunningSession())
+    _bind_logger(state)
+    state.on_enter(ctx)
+    assert state.on_action(ctx, "stop")
+
+    for _ in range(100):
+        now[0] += 0.02
+        ctx.robot_joints.timestamp_ns += 1
+        state.on_update(ctx, 0.02)
+        if ctx.frame is not None:
+            _follow_connected_command(ctx)
+        if ctx.requested:
+            break
+
+    assert ctx.requested[-1][0] == running.INITIAL_POS
+    np.testing.assert_allclose(ctx.robot_joints.position[running.HIP_INDICES], 0.0, atol=1e-6)
+
+
+def test_hip_sweep_tracking_fault_identifies_joints(monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr(running, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    ctx = Context()
+    state = running.ArmRangeState(running.ARM_RANGE, 3, running.RunningSession())
+    errors = _bind_logger(state)
+    state.on_enter(ctx)
+    state.segment_index = running.ARM_SEGMENT_COUNT
+    state.holding = True
+    state.segment_started_at = now[0] - 0.21
+    now[0] += 0.02
+    ctx.robot_joints.timestamp_ns += 1
+    state.on_update(ctx, 0.02)
+
+    assert ctx.requested[-1][0] == running.ZERO_TORQUE
+    assert "l_hip_y_joint" in errors[-1]
+    assert "r_hip_y_joint" in errors[-1]
 
 
 def test_stale_connected_feedback_requests_zero_torque(monkeypatch):
