@@ -43,6 +43,7 @@ htmlcov/
 !/src/bxi_example_py_elf3/test/test_half_applause.py
 !/src/bxi_example_py_elf3/test/test_half_demo.py
 !/src/bxi_example_py_elf3/test/test_half_simulation.py
+!/src/bxi_example_py_elf3/test/test_motor_safety.py
 
 # Local editor, agent and documentation workspaces
 /.vscode/

@@ -11,6 +11,7 @@ from launch.actions import IncludeLaunchDescription, OpaqueFunction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
 from bxi_example_py_elf3.framework.mod_api.hardware_launch import (
+    HALF_DEMO_REQUIRED_MOTOR_DISABLE_MASK,
     declare_hardware_launch_arguments,
     hardware_node_from_context,
 )
@@ -113,7 +114,12 @@ def generate_launch_description():
                 PythonLaunchDescriptionSource(cameras_launch),
             ),
             OpaqueFunction(
-                function=lambda context: [hardware_node_from_context(context)]
+                function=lambda context: [
+                    hardware_node_from_context(
+                        context,
+                        required_motor_disable=HALF_DEMO_REQUIRED_MOTOR_DISABLE_MASK,
+                    )
+                ]
             ),
             Node(
                 package="bxi_example_py_elf3",

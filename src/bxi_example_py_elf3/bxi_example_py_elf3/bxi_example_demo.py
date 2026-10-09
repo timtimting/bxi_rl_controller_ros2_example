@@ -12,6 +12,8 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.qos import QoSProfile, qos_profile_sensor_data
 import communication.msg as bxiMsg
 import communication.srv as bxiSrv
+from rcl_interfaces.msg import ParameterType
+from rcl_interfaces.srv import GetParameters
 import nav_msgs.msg
 import sensor_msgs.msg
 from threading import Event, Lock
@@ -41,6 +43,10 @@ from bxi_example_py_elf3.framework.mod_api.hardware_launch import (
     DEFAULT_EXTRA_MOTOR_DISABLE_MASK,
 )
 from bxi_example_py_elf3.imu_freshness import ImuStampObserver
+from bxi_example_py_elf3.motor_safety import (
+    HardwareMotorGuard,
+    MotorSafetyFault,
+)
 from bxi_example_py_elf3.framework.platform import (
     NamedJointStateSource,
     RobotControlRuntime,
@@ -123,6 +129,13 @@ class BxiExample(Node):
         self._motor_override_last_names: tuple[str, ...] = ()
         self._motor_override_last_error = ""
         self._motor_override_waiting_for_joints_warned = False
+        self._motor_guard = HardwareMotorGuard() if self.imu_required else None
+        self._motor_mask_future = None
+        self._motor_mask_next_query_at = 0.0
+        self._motor_mask_last_verified_at = 0.0
+        self._motor_mask_logged = False
+        self._next_motor_startup_warning = 0.0
+        self._next_motor_feedback_warning = 0.0
 
         # 订阅发布ros主题
         self.init_pub_sub()
@@ -314,6 +327,15 @@ class BxiExample(Node):
         self.sim_rest_srv = self.create_client(
             bxiSrv.SimulationReset, self.topic_prefix + "sim_reset"
         )
+        self.motor_mask_client = (
+            self.create_client(
+                GetParameters,
+                "/hardware_elf3/get_parameters",
+                callback_group=self.status_callback_group,
+            )
+            if self._motor_guard is not None
+            else None
+        )
 
         self.lock_in = Lock()
         self.lock_ou = self.lock_in  # Lock()
@@ -326,6 +348,12 @@ class BxiExample(Node):
             "allow_in_zero_torque="
             f"{self.motor_override_allow_in_zero_torque}"
         )
+        if self._motor_guard is not None:
+            self.get_logger().warning(
+                "hardware_elf3 feedback does not expose physical motor IDs, "
+                "fault codes, or per-motor sample times; independent command "
+                "watchdog must be verified on the hardware before operation"
+            )
 
     # --------------------------- Runtime 平台适配接口 --------------------------- #
 
@@ -351,6 +379,25 @@ class BxiExample(Node):
                 )
                 self._next_imu_startup_warning = now + 2.0
             return False
+        if self._motor_guard is not None:
+            self._poll_hardware_motor_mask(now)
+            with self.lock_in:
+                ready = (
+                    self._motor_guard.startup_ready(now)
+                    and self._joint_received
+                    and now - self._motor_mask_last_verified_at <= 5.0
+                )
+                fault = self._motor_guard.fault
+            if not ready:
+                if now >= self._next_motor_startup_warning:
+                    self.get_logger().error(
+                        f"hardware motor startup blocked: {fault}"
+                        if fault else
+                        "waiting for verified motor_disable and three complete "
+                        "19-joint feedback frames before reset"
+                    )
+                    self._next_motor_startup_warning = now + 2.0
+                return False
         if self.step == 0:
             if self.robot_reset(1, False):
                 self.get_logger().info("robot reset step 1 requested")
@@ -368,9 +415,57 @@ class BxiExample(Node):
         with self.lock_in:
             return self._joint_received
 
+    def _poll_hardware_motor_mask(self, now: float) -> None:
+        guard = self._motor_guard
+        client = self.motor_mask_client
+        if guard is None or client is None or guard.fault is not None:
+            return
+        future = self._motor_mask_future
+        if future is not None and future.done():
+            self._motor_mask_future = None
+            self._motor_mask_next_query_at = now + 2.0
+            try:
+                response = future.result()
+                values = response.values
+                if len(values) != 1 or values[0].type != ParameterType.PARAMETER_INTEGER:
+                    raise MotorSafetyFault("hardware motor_disable parameter is unavailable")
+                guard.verify_mask(int(values[0].integer_value))
+            except MotorSafetyFault as exc:
+                self._latch_motor_fault(str(exc))
+                return
+            except Exception as exc:
+                self.get_logger().warning(f"cannot read hardware motor_disable: {exc}")
+            else:
+                self._motor_mask_last_verified_at = now
+                if not self._motor_mask_logged:
+                    self.get_logger().info(
+                        "verified hardware motor_disable=0x60007DF0; "
+                        "checking 19 named joints in feedback and commands"
+                    )
+                    self._motor_mask_logged = True
+        if (
+            self.step >= 2
+            and now - self._motor_mask_last_verified_at > 5.0
+        ):
+            self._latch_motor_fault("hardware motor_disable could not be reverified")
+            return
+        if self._motor_mask_future is None and now >= self._motor_mask_next_query_at:
+            try:
+                if client.service_is_ready():
+                    request = GetParameters.Request()
+                    request.names = ["hardware_config/motor_disable"]
+                    self._motor_mask_future = client.call_async(request)
+            except Exception as exc:
+                self._motor_mask_next_query_at = now + 2.0
+                self.get_logger().warning(f"cannot query hardware motor_disable: {exc}")
+
     def snapshot_control_inputs(self):
         """Copy the latest ROS inputs into one coherent framework observation."""
         self._check_imu_runtime_safety()
+        if self._motor_guard is not None:
+            now = time.monotonic()
+            self._poll_hardware_motor_mask(now)
+            self._check_motor_runtime_safety(now)
         with self.lock_in:
             latest_joints = self._joint_source.view
             if self._joint_snapshot is None:
@@ -404,6 +499,19 @@ class BxiExample(Node):
             self.pending_remote_events.clear()
         assert self._observation is not None
         return self._observation, events
+
+    def _check_motor_runtime_safety(self, now: float) -> None:
+        with self.lock_in:
+            guard = self._motor_guard
+            if guard is None or guard.fault is not None:
+                return
+            try:
+                guard.check_feedback(now)
+            except MotorSafetyFault as exc:
+                reason = str(exc)
+            else:
+                return
+        self._latch_motor_fault(reason)
 
     def _check_imu_runtime_safety(self):
         if not self.imu_required:
@@ -465,15 +573,25 @@ class BxiExample(Node):
 
     def publish_motor_frame(self, frame: MotorFrame):
         """Convert a framework motor frame into the ELF3 ROS command message."""
+        if self._motor_guard is not None and self._motor_guard.fault is not None:
+            self._publish_safe_motor_frame()
+            return
         state_name = self.runtime.framework.current_state_name
         override_permitted = self.motor_override_allow_in_zero_torque or (
             state_name != "com.bxi.basic_actions/zero_torque"
         )
-        frame = self._motor_override.apply(
-            frame,
-            now=time.monotonic(),
-            permitted=override_permitted,
-        )
+        now = time.monotonic()
+        try:
+            frame = self._motor_override.apply(
+                frame,
+                now=now,
+                permitted=override_permitted,
+            )
+        except (TypeError, ValueError) as exc:
+            if self._motor_guard is None:
+                raise
+            self._latch_motor_fault(f"invalid motor override: {exc}")
+            return
 
         command_joint_names = (
             SIMULATION_JOINTS
@@ -485,6 +603,26 @@ class BxiExample(Node):
             for index, name in enumerate(frame.layout.names)
             if name in command_joint_names
         ]
+        if self._motor_guard is not None:
+            with self.lock_in:
+                try:
+                    self._motor_guard.check_command(
+                        [frame.layout.names[index] for index in command_indices],
+                        frame.qpos[command_indices],
+                        frame.vel[command_indices],
+                        frame.torque[command_indices],
+                        frame.kp[command_indices],
+                        frame.kd[command_indices],
+                        now=now,
+                        track_position=state_name != "com.bxi.basic_actions/zero_torque",
+                    )
+                except MotorSafetyFault as exc:
+                    fault = str(exc)
+                else:
+                    fault = None
+            if fault is not None:
+                self._latch_motor_fault(fault)
+                return
         msg = bxiMsg.ActuatorCmds()
         msg.header.frame_id = robot_name
         msg.header.stamp = self.get_clock().now().to_msg()
@@ -494,6 +632,43 @@ class BxiExample(Node):
         msg.torque = frame.torque[command_indices].tolist()
         msg.kp = frame.kp[command_indices].tolist()
         msg.kd = frame.kd[command_indices].tolist()
+        self.act_pub.publish(msg)
+
+    def _latch_motor_fault(self, reason: str) -> None:
+        guard = self._motor_guard
+        if guard is None:
+            return
+        with self.lock_in:
+            first = guard.latch(reason)
+        if first:
+            self.get_logger().error(f"hardware motor safety fault: {reason}")
+            self._publish_safe_motor_frame()
+            if self.step >= 2:
+                try:
+                    accepted = self.runtime.request_state(
+                        "com.bxi.basic_actions/zero_torque",
+                        trigger="motor_safety_fault",
+                        force=True,
+                    )
+                    if not accepted:
+                        self.get_logger().error("zero torque state request was rejected")
+                except Exception as exc:
+                    self.get_logger().error(f"cannot switch to zero torque: {exc}")
+
+    def _publish_safe_motor_frame(self) -> None:
+        guard = self._motor_guard
+        assert guard is not None
+        with self.lock_in:
+            position = guard.safe_position()
+        msg = bxiMsg.ActuatorCmds()
+        msg.header.frame_id = robot_name
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.actuators_name = list(guard.names)
+        msg.pos = position
+        msg.vel = [0.0] * len(position)
+        msg.torque = [0.0] * len(position)
+        msg.kp = [0.0] * len(position)
+        msg.kd = [0.0] * len(position)
         self.act_pub.publish(msg)
 
     def publish_state_machine_info(self):
@@ -525,6 +700,15 @@ class BxiExample(Node):
             if self._shutting_down.is_set() or not rclpy.ok():
                 return False
             self.get_logger().info("robot reset service not available; waiting")
+
+        if self._motor_guard is not None:
+            now = time.monotonic()
+            with self.lock_in:
+                if (
+                    not self._motor_guard.startup_ready(now)
+                    or now - self._motor_mask_last_verified_at > 5.0
+                ):
+                    return False
 
         self.rest_srv.call_async(req)
         return True
@@ -560,6 +744,32 @@ class BxiExample(Node):
         self._update_joint_state(msg.name, msg.position, msg.velocity)
 
     def actuator_callback(self, msg):
+        guard = self._motor_guard
+        if guard is not None:
+            now = time.monotonic()
+            with self.lock_in:
+                try:
+                    complete = guard.observe_feedback(
+                        msg.name,
+                        msg.position,
+                        msg.velocity,
+                        msg.effort,
+                        now=now,
+                    )
+                except (MotorSafetyFault, TypeError, ValueError) as exc:
+                    guard.invalidate_feedback()
+                    error = str(exc)
+                else:
+                    error = None
+            if error is not None:
+                if self.step >= 2:
+                    self._latch_motor_fault(error)
+                elif now >= self._next_motor_feedback_warning:
+                    self.get_logger().warning(f"waiting for valid motor feedback: {error}")
+                    self._next_motor_feedback_warning = now + 2.0
+                return
+            if not complete:
+                return
         self._update_joint_state(msg.name, msg.position, msg.velocity)
 
     def _update_joint_state(self, names, position, velocity):

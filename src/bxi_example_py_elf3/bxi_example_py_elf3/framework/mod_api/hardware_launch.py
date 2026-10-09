@@ -10,6 +10,7 @@ DEFAULT_HARDWARE_CONFIG = {
 }
 HEAD_MOTOR_DISABLE_MASK = 0x60000000
 DEFAULT_EXTRA_MOTOR_DISABLE_MASK = 0x7FFFFFFF & ~0x1FFF820F
+HALF_DEMO_REQUIRED_MOTOR_DISABLE_MASK = 0x60007DF0
 
 
 def declare_hardware_launch_arguments() -> list[Any]:
@@ -46,7 +47,9 @@ def declare_hardware_launch_arguments() -> list[Any]:
     ]
 
 
-def hardware_node_from_context(context) -> Any:
+def hardware_node_from_context(
+    context, *, required_motor_disable: int | None = None
+) -> Any:
     from launch.substitutions import LaunchConfiguration
     from launch_ros.actions import Node
     from ament_index_python.packages import get_package_prefix
@@ -62,6 +65,15 @@ def hardware_node_from_context(context) -> Any:
     hardware_config = _resolve_hardware_config(
         robot_config, enable_head, enable_imu, extra_motor_disable_mask
     )
+    actual_motor_disable = hardware_config["hardware_config/motor_disable"]
+    if (
+        required_motor_disable is not None
+        and actual_motor_disable != required_motor_disable
+    ):
+        raise ValueError(
+            "half-body hardware motor_disable must be "
+            f"0x{required_motor_disable:08X}, got 0x{actual_motor_disable:08X}"
+        )
     package_name = "hardware_elf3"
     package_prefix = get_package_prefix(package_name)
     executable_path = os.path.join(package_prefix, "lib", package_name, package_name)

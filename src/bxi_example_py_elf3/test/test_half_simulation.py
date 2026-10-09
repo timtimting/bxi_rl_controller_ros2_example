@@ -1,4 +1,6 @@
 from pathlib import Path
+from threading import Lock
+import time
 from types import SimpleNamespace
 from xml.etree import ElementTree
 
@@ -90,6 +92,8 @@ def test_head_motor_commands_are_simulation_only(monkeypatch):
         ),
         motor_override_allow_in_zero_torque=False,
         _motor_override=SimpleNamespace(apply=lambda frame, **_: frame),
+        _motor_guard=None,
+        lock_in=Lock(),
         get_clock=lambda: SimpleNamespace(
             now=lambda: SimpleNamespace(to_msg=lambda: Time())
         ),
@@ -100,5 +104,16 @@ def test_head_motor_commands_are_simulation_only(monkeypatch):
     assert tuple(messages[-1].actuators_name) == EXPECTED_JOINTS
 
     platform.topic_prefix = "hardware/"
+    from bxi_example_py_elf3.motor_safety import HardwareMotorGuard
+
+    platform._motor_guard = HardwareMotorGuard()
+    platform._motor_guard.verify_mask(DEFAULT_EXTRA_MOTOR_DISABLE_MASK)
+    platform._motor_guard.observe_feedback(
+        EXPECTED_JOINTS[:-2],
+        [0.0] * 19,
+        [0.0] * 19,
+        [0.0] * 19,
+        now=time.monotonic(),
+    )
     bxi_example_demo.BxiExample.publish_motor_frame(platform, frame)
     assert tuple(messages[-1].actuators_name) == EXPECTED_JOINTS[:-2]

@@ -14,6 +14,7 @@ from bxi_example_py_elf3.framework.mod_api.hardware_launch import (
     DEFAULT_EXTRA_MOTOR_DISABLE_MASK,
 )
 from bxi_example_py_elf3.policies.joints import (
+    ELF3_CONNECTED_POSITION_LIMITS,
     ELF3_ISAAC_PARAMETERS,
     ELF3_POLICY_JOINTS,
 )
@@ -34,28 +35,7 @@ KP = PARAMETERS.kp[PARAMETER_INDICES].copy()
 KD = PARAMETERS.kd[PARAMETER_INDICES].copy()
 RUN_CENTER = PARAMETERS.default_position[PARAMETER_INDICES].copy()
 
-# Software limits from robot_test/control/elf3.py, in TEST_LAYOUT order.
-LIMITS = {
-    "waist_y_joint": (-0.5236, 0.5236),
-    "waist_x_joint": (-0.2618, 0.2618),
-    "waist_z_joint": (-2.8798, 2.8798),
-    "l_hip_y_joint": (-2.8798, 2.8798),
-    "r_hip_y_joint": (-2.8798, 2.8798),
-    "l_shoulder_y_joint": (-2.8798, 2.8798),
-    "l_shoulder_x_joint": (-0.34907, 3.0543),
-    "l_shoulder_z_joint": (-2.8798, 2.8798),
-    "l_elbow_y_joint": (-0.95993, 1.6581),
-    "l_wrist_x_joint": (-2.8798, 2.8798),
-    "l_wrist_y_joint": (-1.309, 1.309),
-    "l_wrist_z_joint": (-0.7854, 0.7854),
-    "r_shoulder_y_joint": (-2.8798, 2.8798),
-    "r_shoulder_x_joint": (-3.0543, 0.34907),
-    "r_shoulder_z_joint": (-2.8798, 2.8798),
-    "r_elbow_y_joint": (-0.95993, 1.6581),
-    "r_wrist_x_joint": (-2.8798, 2.8798),
-    "r_wrist_y_joint": (-1.309, 1.309),
-    "r_wrist_z_joint": (-0.7854, 0.7854),
-}
+LIMITS = ELF3_CONNECTED_POSITION_LIMITS
 POSITION_MIN = np.asarray([LIMITS[name][0] for name in JOINT_NAMES])
 POSITION_MAX = np.asarray([LIMITS[name][1] for name in JOINT_NAMES])
 LIMIT_MARGIN_RAD = 0.02

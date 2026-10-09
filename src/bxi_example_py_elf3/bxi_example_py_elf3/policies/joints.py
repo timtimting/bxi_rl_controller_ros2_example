@@ -38,6 +38,51 @@ ELF3_POLICY_JOINTS = JointLayout(
     label="ELF3 29-joint policy",
 )
 
+ELF3_CONNECTED_POSITION_LIMITS = {
+    "waist_y_joint": (-0.5236, 0.5236),
+    "waist_x_joint": (-0.2618, 0.2618),
+    "waist_z_joint": (-2.8798, 2.8798),
+    "l_hip_y_joint": (-2.8798, 2.8798),
+    "r_hip_y_joint": (-2.8798, 2.8798),
+    "l_shoulder_y_joint": (-2.8798, 2.8798),
+    "l_shoulder_x_joint": (-0.34907, 3.0543),
+    "l_shoulder_z_joint": (-2.8798, 2.8798),
+    "l_elbow_y_joint": (-0.95993, 1.6581),
+    "l_wrist_x_joint": (-2.8798, 2.8798),
+    "l_wrist_y_joint": (-1.309, 1.309),
+    "l_wrist_z_joint": (-0.7854, 0.7854),
+    "r_shoulder_y_joint": (-2.8798, 2.8798),
+    "r_shoulder_x_joint": (-3.0543, 0.34907),
+    "r_shoulder_z_joint": (-2.8798, 2.8798),
+    "r_elbow_y_joint": (-0.95993, 1.6581),
+    "r_wrist_x_joint": (-2.8798, 2.8798),
+    "r_wrist_y_joint": (-1.309, 1.309),
+    "r_wrist_z_joint": (-0.7854, 0.7854),
+}
+
+# Command-side caps based on the half-body simulation's actuator force ranges.
+ELF3_CONNECTED_TORQUE_LIMITS = {
+    "waist_y_joint": 100.0,
+    "waist_x_joint": 100.0,
+    "waist_z_joint": 150.0,
+    "l_hip_y_joint": 150.0,
+    "r_hip_y_joint": 150.0,
+    "l_shoulder_y_joint": 50.0,
+    "l_shoulder_x_joint": 50.0,
+    "l_shoulder_z_joint": 25.0,
+    "l_elbow_y_joint": 50.0,
+    "l_wrist_x_joint": 25.0,
+    "l_wrist_y_joint": 25.0,
+    "l_wrist_z_joint": 25.0,
+    "r_shoulder_y_joint": 50.0,
+    "r_shoulder_x_joint": 50.0,
+    "r_shoulder_z_joint": 25.0,
+    "r_elbow_y_joint": 50.0,
+    "r_wrist_x_joint": 25.0,
+    "r_wrist_y_joint": 25.0,
+    "r_wrist_z_joint": 25.0,
+}
+
 ELF3_ISAAC_JOINTS = ELF3_POLICY_JOINTS.select(
     (
         "l_shoulder_y_joint",
@@ -113,6 +158,8 @@ ELF3_ISAAC_PARAMETERS = JointParameterSet.from_rows(
 )
 
 __all__ = [
+    "ELF3_CONNECTED_POSITION_LIMITS",
+    "ELF3_CONNECTED_TORQUE_LIMITS",
     "ELF3_ISAAC_JOINTS",
     "ELF3_ISAAC_PARAMETERS",
     "ELF3_POLICY_JOINTS",
