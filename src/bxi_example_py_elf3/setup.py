@@ -250,7 +250,6 @@ setup(
     cmdclass=command_classes,
     entry_points={
         "console_scripts": [
-            "bxi_example_py_elf3_mjlab = bxi_example_py_elf3.bxi_example_mjlab:main",
             "bxi_example_py_elf3_demo = bxi_example_py_elf3.bxi_example_demo:main",
         ],
     },
