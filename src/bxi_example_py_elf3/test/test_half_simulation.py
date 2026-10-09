@@ -24,6 +24,7 @@ EXPECTED_JOINTS = tuple(
 
 def test_half_model_has_only_connected_leg_joints_and_keeps_head():
     root = ElementTree.parse(XML_PATH).getroot()
+    assert root.get("model") == "elf3"
     joints = tuple(
         joint.get("name")
         for joint in root.findall(".//worldbody//joint")
@@ -34,8 +35,15 @@ def test_half_model_has_only_connected_leg_joints_and_keeps_head():
     assert len(joints) == 21
 
     for side in ("l", "r"):
+        hip = root.find(f".//body[@name='{side}_hip_y_link']")
+        assert hip is not None
+        assert hip.find("inertial") is not None
+        assert hip.find("joint") is not None
+        assert hip.find(".//geom") is None
         for link in ("hip_x", "hip_z", "knee_y", "ankle_y", "ankle_x"):
-            assert root.find(f".//body[@name='{side}_{link}_link']") is not None
+            assert root.find(f".//body[@name='{side}_{link}_link']") is None
+        for link in ("hip_y", "hip_x", "hip_z", "knee_y", "ankle_y", "ankle_x"):
+            assert root.find(f".//asset/mesh[@name='{side}_{link}_link']") is None
 
 
 def test_half_model_compiles_with_mujoco():
@@ -59,6 +67,8 @@ def test_head_motor_commands_are_simulation_only(monkeypatch):
 
     monkeypatch.setattr(cpu_affinity, "bootstrap_process_scheduling", lambda: None)
     from bxi_example_py_elf3 import bxi_example_demo
+
+    assert ElementTree.parse(XML_PATH).getroot().get("model") == bxi_example_demo.robot_name
 
     names = ELF3_POLICY_JOINTS.names + ("head_z_joint", "head_y_joint")
     positions = np.zeros(len(names), dtype=np.float32)

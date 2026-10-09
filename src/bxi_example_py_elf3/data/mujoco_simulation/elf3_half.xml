@@ -1,4 +1,4 @@
-<mujoco model="elf3_half">
+<mujoco model="elf3">
   <compiler angle="radian" meshdir="./meshes/"/>
 
   <!-- Keep body-mounted cameras from clipping the robot when large terrains increase model extent. -->
@@ -14,9 +14,6 @@
       <site group="5" rgba="1 0 0 1"/>
       <default class="collision">
         <geom type="capsule" contype="1" conaffinity="1" group="3" rgba="0.2 0.6 0.2 0.3"/>
-        <default class="foot_capsule">
-          <geom size="0.01 0 0"/>
-        </default>
       </default>
     </default>
   </default>
@@ -30,18 +27,6 @@
     <mesh name="waist_y_link" content_type="model/stl" file="waist_y_link.STL"/>
     <mesh name="waist_x_link" content_type="model/stl" file="waist_x_link.STL"/>
     <mesh name="waist_z_link" content_type="model/stl" file="waist_z_link.STL"/>
-    <mesh name="l_hip_y_link" content_type="model/stl" file="l_hip_y_link.STL"/>
-    <mesh name="l_hip_x_link" content_type="model/stl" file="l_hip_x_link.STL"/>
-    <mesh name="l_hip_z_link" content_type="model/stl" file="l_hip_z_link.STL"/>
-    <mesh name="l_knee_y_link" content_type="model/stl" file="l_knee_y_link.STL"/>
-    <mesh name="l_ankle_y_link" content_type="model/stl" file="l_ankle_y_link.STL"/>
-    <mesh name="l_ankle_x_link" content_type="model/stl" file="l_ankle_x_link.STL"/>
-    <mesh name="r_hip_y_link" content_type="model/stl" file="r_hip_y_link.STL"/>
-    <mesh name="r_hip_x_link" content_type="model/stl" file="r_hip_x_link.STL"/>
-    <mesh name="r_hip_z_link" content_type="model/stl" file="r_hip_z_link.STL"/>
-    <mesh name="r_knee_y_link" content_type="model/stl" file="r_knee_y_link.STL"/>
-    <mesh name="r_ankle_y_link" content_type="model/stl" file="r_ankle_y_link.STL"/>
-    <mesh name="r_ankle_x_link" content_type="model/stl" file="r_ankle_x_link.STL"/>
     <mesh name="l_shoulder_y_link" content_type="model/stl" file="l_shoulder_y_link.STL"/>
     <mesh name="l_shoulder_x_link" content_type="model/stl" file="l_shoulder_x_link.STL"/>
     <mesh name="l_shoulder_z_link" content_type="model/stl" file="l_shoulder_z_link.STL"/>
@@ -87,77 +72,10 @@
             <body name="l_hip_y_link" pos="0 0.136 -0.156">
               <inertial pos="-0.02327137 -0.0044378 0.00220394" mass="1.74663835" fullinertia="0.00270621 0.00206302 0.00218919 8.023e-05 1.126e-05 5.888e-05"/>
               <joint name="l_hip_y_joint" pos="0 0 0" axis="0 1 0" range="-2.8798 2.8798" actuatorfrcrange="-150 150" armature="0.044688"/>
-              <geom rgba="0.752941 0.752941 0.752941 1" mesh="l_hip_y_link"/>
-              <!-- Unwired leg links stay rigid, retaining their geometry and mass. -->
-              <body name="l_hip_x_link">
-                <inertial pos="0.01788252 0 -0.03683802" mass="0.23202193" fullinertia="0.00036995 0.00032959 0.00014279 0 -3.668e-05 0"/>
-                <geom rgba="0.752941 0.752941 0.752941 1" mesh="l_hip_x_link"/>
-                <geom name="l_hip_x_collision" class="collision" size="0.05 0.0175" pos="-0.0175 0 0" quat="0.707107 0 -0.707107 0" condim="1"/>
-                <body name="l_hip_z_link">
-                  <inertial pos="0.00212894 -0.01021633 -0.23364887" mass="2.94332059" fullinertia="0.03095416 0.03161495 0.0035579 1.98e-06 0.00031793 -0.00246019"/>
-                  <geom rgba="0.752941 0.752941 0.752941 1" mesh="l_hip_z_link"/>
-                  <geom name="l_hip_z_1_collision" class="collision" size="0.05 0.1" pos="0 0 -0.22" condim="1"/>
-                  <geom name="l_hip_z_2_collision" class="collision" size="0.05 0.0125" pos="0 -0.0125 -0.32" quat="0.707107 0.707107 0 0" condim="1"/>
-                  <body name="l_knee_y_link" pos="0 0 -0.32">
-                    <inertial pos="0.00668026 0.00374771 -0.14451634" mass="1.86991215" fullinertia="0.00964585 0.00972958 0.00144471 5.343e-05 -0.00023357 -0.00066056"/>
-                    <geom rgba="0.752941 0.752941 0.752941 1" mesh="l_knee_y_link"/>
-                    <geom name="l_knee_y_collision" class="collision" size="0.05 0.07" pos="0 0 -0.19" condim="1"/>
-                    <body name="l_ankle_y_link" pos="0 0 -0.32">
-                      <inertial pos="0 0 0" mass="0.01268984" fullinertia="1.31e-06 5.9e-07 1.55e-06 0 0 0"/>
-                      <geom rgba="0.752941 0.752941 0.752941 1" mesh="l_ankle_y_link"/>
-                      <body name="l_ankle_x_link">
-                        <inertial pos="0.020935 0 -0.02438162" mass="0.37980156" fullinertia="0.00020999 0.00150042 0.00158777 0 7.03e-05 0"/>
-                        <geom rgba="0.752941 0.752941 0.752941 1" mesh="l_ankle_x_link"/>
-                        <geom name="l_foot1_collision" class="foot_capsule" size="0.01 0.09" pos="0.03 -0.03 -0.03" quat="0.707107 0 -0.707107 0" priority="1" friction="0.6"/>
-                        <geom name="l_foot2_collision" class="foot_capsule" size="0.01 0.1" pos="0.03 -0.02 -0.03" quat="0.707107 0 -0.707107 0" priority="1" friction="0.6"/>
-                        <geom name="l_foot3_collision" class="foot_capsule" size="0.01 0.105" pos="0.03 -0.01 -0.03" quat="0.707107 0 -0.707107 0" priority="1" friction="0.6"/>
-                        <geom name="l_foot4_collision" class="foot_capsule" size="0.01 0.11" pos="0.03 0 -0.03" quat="0.707107 0 -0.707107 0" priority="1" friction="0.6"/>
-                        <geom name="l_foot5_collision" class="foot_capsule" size="0.01 0.105" pos="0.03 0.01 -0.03" quat="0.707107 0 -0.707107 0" priority="1" friction="0.6"/>
-                        <geom name="l_foot6_collision" class="foot_capsule" size="0.01 0.1" pos="0.03 0.02 -0.03" quat="0.707107 0 -0.707107 0" priority="1" friction="0.6"/>
-                        <geom name="l_foot7_collision" class="foot_capsule" size="0.01 0.09" pos="0.03 0.03 -0.03" quat="0.707107 0 -0.707107 0" priority="1" friction="0.6"/>
-                        <site name="l_foot" pos="0 0 0"/>
-                      </body>
-                    </body>
-                  </body>
-                </body>
-              </body>
             </body>
             <body name="r_hip_y_link" pos="0 -0.136 -0.156">
               <inertial pos="-0.02327137 0.00327913 0.00019704" mass="1.74663841" fullinertia="0.00273024 0.00207512 0.00220112 -9.182e-05 -8.82e-06 -7.27e-05"/>
               <joint name="r_hip_y_joint" pos="0 0 0" axis="0 1 0" range="-2.8798 2.8798" actuatorfrcrange="-150 150" armature="0.044688"/>
-              <geom rgba="0.752941 0.752941 0.752941 1" mesh="r_hip_y_link"/>
-              <body name="r_hip_x_link">
-                <inertial pos="0.01788252 0 -0.03683802" mass="0.23202193" fullinertia="0.00036995 0.00032959 0.00014279 0 -3.668e-05 0"/>
-                <geom rgba="0.752941 0.752941 0.752941 1" mesh="r_hip_x_link"/>
-                <geom name="r_hip_x_collision" class="collision" size="0.05 0.0175" pos="-0.0175 0 0" quat="0.707107 0 -0.707107 0" condim="1"/>
-                <body name="r_hip_z_link">
-                  <inertial pos="0.00144137 0.00989203 -0.23483981" mass="2.94332069" fullinertia="0.03157825 0.03222338 0.00358063 2.026e-05 0.00014025 0.00261668"/>
-                  <geom rgba="0.752941 0.752941 0.752941 1" mesh="r_hip_z_link"/>
-                  <geom name="r_hip_z_1_collision" class="collision" size="0.05 0.1" pos="0 0 -0.22" condim="1"/>
-                  <geom name="r_hip_z_2_collision" class="collision" size="0.05 0.0125" pos="0 0.0125 -0.32" quat="0.707107 -0.707107 0 0" condim="1"/>
-                  <body name="r_knee_y_link" pos="0 0 -0.32">
-                    <inertial pos="0.00668027 -0.00326262 -0.14451644" mass="1.86991402" fullinertia="0.00965223 0.0097296 0.00145107 -6.279e-05 -0.00023357 0.00065665"/>
-                    <geom rgba="0.752941 0.752941 0.752941 1" mesh="r_knee_y_link"/>
-                    <geom name="r_knee_y_collision" class="collision" size="0.05 0.07" pos="0 0 -0.19" condim="1"/>
-                    <body name="r_ankle_y_link" pos="0 0 -0.32">
-                      <inertial pos="0 0 0" mass="0.01268984" fullinertia="1.31e-06 5.9e-07 1.55e-06 0 0 0"/>
-                      <geom rgba="0.752941 0.752941 0.752941 1" mesh="r_ankle_y_link"/>
-                      <body name="r_ankle_x_link">
-                        <inertial pos="0.020935 0 -0.02438162" mass="0.37980156" fullinertia="0.00020999 0.00150042 0.00158777 0 7.03e-05 0"/>
-                        <geom rgba="0.752941 0.752941 0.752941 1" mesh="r_ankle_x_link"/>
-                        <geom name="r_foot1_collision" class="foot_capsule" size="0.01 0.09" pos="0.03 -0.03 -0.03" quat="0.707107 0 -0.707107 0" priority="1" friction="0.6"/>
-                        <geom name="r_foot2_collision" class="foot_capsule" size="0.01 0.1" pos="0.03 -0.02 -0.03" quat="0.707107 0 -0.707107 0" priority="1" friction="0.6"/>
-                        <geom name="r_foot3_collision" class="foot_capsule" size="0.01 0.105" pos="0.03 -0.01 -0.03" quat="0.707107 0 -0.707107 0" priority="1" friction="0.6"/>
-                        <geom name="r_foot4_collision" class="foot_capsule" size="0.01 0.11" pos="0.03 0 -0.03" quat="0.707107 0 -0.707107 0" priority="1" friction="0.6"/>
-                        <geom name="r_foot5_collision" class="foot_capsule" size="0.01 0.105" pos="0.03 0.01 -0.03" quat="0.707107 0 -0.707107 0" priority="1" friction="0.6"/>
-                        <geom name="r_foot6_collision" class="foot_capsule" size="0.01 0.1" pos="0.03 0.02 -0.03" quat="0.707107 0 -0.707107 0" priority="1" friction="0.6"/>
-                        <geom name="r_foot7_collision" class="foot_capsule" size="0.01 0.09" pos="0.03 0.03 -0.03" quat="0.707107 0 -0.707107 0" priority="1" friction="0.6"/>
-                        <site name="r_foot" pos="0 0 0"/>
-                      </body>
-                    </body>
-                  </body>
-                </body>
-              </body>
             </body>
           </body>
         </body>
