@@ -121,9 +121,7 @@ sources:
       keyboard.normal: {from: keyboard.key, key: "1", hold_ms: 200} # 1：普通站立/行走
       keyboard.pd_break: {from: keyboard.key, key: "!"}             # Shift+1：PD 刹车
       keyboard.sonic: {from: keyboard.key, key: "@"}               # Shift+2：SONIC 遥操
-      keyboard.recover: {from: keyboard.key, key: "2"}             # 2：恢复站立
       keyboard.dance: {from: keyboard.key, key: "3"}               # 3：舞蹈
-      keyboard.amp_run: {from: keyboard.key, key: "4"}             # 4：AMP 奔跑
       keyboard.normal_run: {from: keyboard.key, key: "5"}          # 5：普通奔跑
       keyboard.back_flip: {from: keyboard.key, key: "6"}           # 6：后空翻
       keyboard.forward_flip: {from: keyboard.key, key: "7"}        # 7：前空翻
@@ -270,9 +268,7 @@ controls:
   keyboard.normal_event: {type: bool, inputs: [{source: keyboard.normal}]}
   keyboard.pd_break_event: {type: bool, inputs: [{source: keyboard.pd_break}]}
   keyboard.sonic_event: {type: bool, inputs: [{source: keyboard.sonic}]}
-  keyboard.recover_event: {type: bool, inputs: [{source: keyboard.recover}]}
   keyboard.dance_event: {type: bool, inputs: [{source: keyboard.dance}]}
-  keyboard.amp_run_event: {type: bool, inputs: [{source: keyboard.amp_run}]}
   keyboard.normal_run_event: {type: bool, inputs: [{source: keyboard.normal_run}]}
   keyboard.back_flip_event: {type: bool, inputs: [{source: keyboard.back_flip}]}
   keyboard.forward_flip_event: {type: bool, inputs: [{source: keyboard.forward_flip}]}
@@ -372,11 +368,6 @@ outputs:
         - released: shoulder.right_event
         - released: trigger.left_event
         - released: trigger.right_event
-
-    # 键盘 2 保留原恢复站立事件。
-    - output: btn_6=1
-      when:
-        - keyboard.recover_event
 
     # LB+B（键盘 5）：半身演示从初始姿态进入悬挂跑步。
     - output: btn_7=1

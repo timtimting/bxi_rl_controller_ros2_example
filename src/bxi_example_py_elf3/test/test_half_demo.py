@@ -123,6 +123,29 @@ def test_trajectory_uses_only_connected_columns():
     assert not any("knee" in name or "ankle" in name for name in running.JOINT_NAMES)
 
 
+def test_legacy_modes_are_not_packaged_or_bound():
+    basic_root = MOD_ROOT.parent / "com.bxi.basic_actions"
+    basic = yaml.safe_load((basic_root / "mod.yaml").read_text())
+    assert set(basic["states"]) == {
+        "zero_torque", "imu_protection", "pd_brake", "initial_pos", "applause"
+    }
+    for name in (
+        "amp_run.onnx", "withoutarm.onnx", "recover.onnx", "recover.npz",
+        "shuishou.onnx", "shuishou.npz", "model_normal.onnx",
+    ):
+        assert not (basic_root / "assets" / name).exists()
+
+    remote = yaml.safe_load(
+        (Path(__file__).resolve().parents[2] / "remote_controller/config/xbox_default.yaml").read_text()
+    )
+    keyboard = remote["sources"]["keyboard"]["signals"]
+    assert "keyboard.recover" not in keyboard
+    assert "keyboard.amp_run" not in keyboard
+    assert not any(
+        entry["output"] == "btn_6=1" for entry in remote["outputs"]["level"]
+    )
+
+
 def test_remote_combinations_and_state_routes():
     config = yaml.safe_load((MOD_ROOT / "mod.yaml").read_text())
     assert set(config["states"]) == {"running", "arm_range"}

@@ -1,12 +1,14 @@
 # Inference benchmark
 
-Run every model against every locally available backend:
+Run a supplied model against every locally available backend:
 
 ```bash
-python3 tools/benchmark/backend_benchmark.py
+python3 tools/benchmark/backend_benchmark.py /path/to/model.onnx
 ```
 
-The command needs no `PYTHONPATH`. It discovers every `.onnx` under `src/`,
+The command needs no `PYTHONPATH`. The half-demo branch contains no bundled
+ONNX models, so supply a model path or directory. The tool can also discover
+every `.onnx` under `src/` when a checkout contains models. It
 enumerates OpenVINO devices, tests OpenVINO `AUTO`, tests the framework's ONNX
 Runtime selection, and includes RKNN when a matching model exists. A timestamped
 JSON report is written under `tools/benchmark/results/` for cross-platform
@@ -33,17 +35,17 @@ Useful variants:
 
 ```bash
 # Fast deployment smoke test
-python3 tools/benchmark/backend_benchmark.py --quick
+python3 tools/benchmark/backend_benchmark.py /path/to/model.onnx --quick
 
 # One model or an external model directory
 python3 tools/benchmark/backend_benchmark.py path/to/model.onnx
 python3 tools/benchmark/backend_benchmark.py /opt/models
 
 # Longer, more stable statistics
-python3 tools/benchmark/backend_benchmark.py --warmup 500 --iterations 10000
+python3 tools/benchmark/backend_benchmark.py /path/to/model.onnx --warmup 500 --iterations 10000
 
 # Override an unresolved dynamic input dimension
-python3 tools/benchmark/backend_benchmark.py --shape images=1,3,224,224
+python3 tools/benchmark/backend_benchmark.py /path/to/model.onnx --shape images=1,3,224,224
 
 # Override bounded generation ranges for named floating-point inputs
 python3 tools/benchmark/backend_benchmark.py path/to/model.onnx \
@@ -51,7 +53,7 @@ python3 tools/benchmark/backend_benchmark.py path/to/model.onnx \
   --input-range depth_data=-0.5,0.5
 
 # Explicit report filename
-python3 tools/benchmark/backend_benchmark.py --json results/my-platform.json
+python3 tools/benchmark/backend_benchmark.py /path/to/model.onnx --json results/my-platform.json
 ```
 
 The JSON report records the effective per-model seed and observed input minima
@@ -66,7 +68,7 @@ still be requested directly:
 ```bash
 PYTHONNOUSERSITE=1 \
 BXI_RKNN_CONVERT_ON_LOAD=rk3588 \
-python3 tools/benchmark/backend_benchmark.py --rknn-target rk3588
+python3 tools/benchmark/backend_benchmark.py /path/to/model.onnx --rknn-target rk3588
 ```
 
 When an existing RKNN cache has a `.rknn.build.json` sidecar, the benchmark uses
@@ -164,7 +166,7 @@ dataset is needed:
 
 ```bash
 BXI_RKNN_CONVERT_ON_LOAD='{"target":"rk3588","do_quantization":true,"dataset":"/data/calibration.txt"}' \
-python3 tools/benchmark/backend_benchmark.py --rknn-target rk3588
+python3 tools/benchmark/backend_benchmark.py /path/to/model.onnx --rknn-target rk3588
 ```
 
 Use `rknn-toolkit2` on x86_64 to convert models and
@@ -189,28 +191,6 @@ Keep the machine idle, use the same power mode, and use the same benchmark
 settings when comparing reports from different platforms. The first backend in
 each model is the numerical reference; quantized RKNN outputs may legitimately
 have larger differences.
-
-## Compare with a Git baseline
-
-The policy-level benchmark compares the current inference implementation with a
-Git revision. It also measures Python allocations:
-
-```bash
-python3 tools/benchmark/inference_benchmark.py --baseline-ref HEAD
-```
-
-Historical policy constructors are detected from the selected revision, so
-pre-framework implementations that accepted only model paths can also be used
-as baselines. A failed isolated worker prints its original traceback together
-with the case and version instead of only reporting `CalledProcessError`.
-The default suite covers both full-body and 15-joint `withoutarm` AMP models,
-the legacy MuJoCo-order and Isaac-order motion policies, history motion, and
-both cached and fresh depth input paths. Outputs are normalized by joint name
-before all 29 joint positions are compared, so a layout-only change is allowed
-but a semantic joint swap fails the benchmark.
-
-Use this benchmark when changing input construction, history buffers or policy
-code. Use `backend_benchmark.py` when comparing runtimes and deployment devices.
 
 ## Joint-layout hot path
 
@@ -245,9 +225,8 @@ The script creates a temporary API-3 Mod with one allocation-free hold state and
 calls the same cycle boundary used by `RobotControlRuntime`. It reports platform
 input snapshot, framework update, actuator publication, their accounted sum and
 the complete wall-clock call. This deliberately measures the framework's fixed
-overhead; model inference belongs in `inference_benchmark.py`, and hardware/ROS
-message conversion remains visible in the running controller's periodic timing
-report.
+overhead; hardware/ROS message conversion remains visible in the running
+controller's periodic timing report.
 
 The report also compares sleeping-process CPU time with and without an idle
 `SubprocessLogRouter`, making the background cost of process log collection

@@ -38,11 +38,6 @@ ELF3_POLICY_JOINTS = JointLayout(
     label="ELF3 29-joint policy",
 )
 
-ELF3_LOWER_BODY_JOINTS = ELF3_POLICY_JOINTS.select(
-    ELF3_POLICY_JOINTS.names[:15],
-    label="ELF3 waist and legs policy",
-)
-
 ELF3_ISAAC_JOINTS = ELF3_POLICY_JOINTS.select(
     (
         "l_shoulder_y_joint",
@@ -120,6 +115,5 @@ ELF3_ISAAC_PARAMETERS = JointParameterSet.from_rows(
 __all__ = [
     "ELF3_ISAAC_JOINTS",
     "ELF3_ISAAC_PARAMETERS",
-    "ELF3_LOWER_BODY_JOINTS",
     "ELF3_POLICY_JOINTS",
 ]

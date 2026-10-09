@@ -43,22 +43,16 @@ python3 tools/cpu_usage.py <PID> --threads
 
 ## 推理 benchmark
 
-自动发现全部模型并测试当前平台可用的 ONNX Runtime、OpenVINO 和 RKNN 后端：
+指定 ONNX 模型，测试当前平台可用的 ONNX Runtime、OpenVINO 和 RKNN 后端。半身演示分支不附带 ONNX 模型：
 
 ```bash
-python3 tools/benchmark/backend_benchmark.py
+python3 tools/benchmark/backend_benchmark.py /path/to/model.onnx
 ```
 
 快速检查：
 
 ```bash
-python3 tools/benchmark/backend_benchmark.py --quick
-```
-
-与 Git baseline 比较策略热路径和 Python 内存申请：
-
-```bash
-python3 tools/benchmark/inference_benchmark.py --baseline-ref HEAD
+python3 tools/benchmark/backend_benchmark.py /path/to/model.onnx --quick
 ```
 
 完整参数和跨平台测试说明见 [`tools/benchmark/README.md`](benchmark/README.md)。

@@ -249,26 +249,6 @@ class _LegacyMotionPolicy(_MotionGeometry, JointPolicy):
         self.motion.close()
 
 
-class DanceMotionPolicyMjlab(_LegacyMotionPolicy):
-    joint_contract = PolicyJointContract(
-        observation=ELF3_POLICY_JOINTS,
-        action=ELF3_POLICY_JOINTS,
-    )
-
-    def __init__(
-        self, motion_npz_path, model_onnx_path, start_frame=0, fixed_pos=False, **kwargs
-    ):
-        super().__init__(
-            motion_npz_path,
-            model_onnx_path,
-            start_frame,
-            fixed_pos,
-            include_gravity=False,
-            gains_from_metadata=True,
-            **kwargs,
-        )
-
-
 class DanceMotionPolicyGravityMjlab(_LegacyMotionPolicy):
     joint_contract = PolicyJointContract(
         observation=ELF3_POLICY_JOINTS,
@@ -607,24 +587,8 @@ class DanceMotionPolicyGravityIsaaclabV2(_HistoryMotionPolicy):
         )
 
 
-class DanceMotionPolicyGravityIsaaclabV3(_HistoryMotionPolicy):
-    def __init__(
-        self, motion_npz_path, model_onnx_path, start_frame=0, fixed_pos=False, **kwargs
-    ):
-        super().__init__(
-            motion_npz_path,
-            model_onnx_path,
-            start_frame,
-            fixed_pos,
-            reference_residual=False,
-            **kwargs,
-        )
-
-
 __all__ = [
     "DanceMotionPolicyGravityIsaaclab",
     "DanceMotionPolicyGravityIsaaclabV2",
-    "DanceMotionPolicyGravityIsaaclabV3",
     "DanceMotionPolicyGravityMjlab",
-    "DanceMotionPolicyMjlab",
 ]
