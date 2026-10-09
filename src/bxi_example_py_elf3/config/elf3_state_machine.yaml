@@ -5,7 +5,7 @@ initial_state: com.bxi.basic_actions/zero_torque
 # becomes stale. It intentionally has no outgoing routes while recovery is
 # disabled.
 
-# Half-body test only loads the built-in applause and safety states.
+# Built-in Mods provide base safety/applause and half-body test states.
 mod_paths: []
 
 # 统一日志身份与子进程输出保护。levels 按最长 scope 前缀匹配。

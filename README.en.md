@@ -102,13 +102,13 @@ source /opt/bxi/bxi_ros2_pkg/setup.bash
 ```
 
 2. In the `bxi_rl_controller_ros2_example` directory, run `bash build.sh` to compile all sources in `./src`. After compilation, run `source ./install/setup.bash` to activate the current package environment.
-3. Run the whole-body control policy:
+3. Run the half-body demo controller:
 
 ```bash
-ros2 launch bxi_example_py_elf3 example_launch_demo.py
+ros2 launch bxi_example_py_elf3 example_demo.launch.py
 ```
 
-This starts the simulation environment and the learning-based controller program.
+This starts the half-body simulation with head joints and the demo controller.
 
 4. Start the keyboard control node:
 
@@ -134,13 +134,13 @@ source /opt/bxi/bxi_ros2_pkg/setup.bash
 ```
 
 2. In the `bxi_rl_controller_ros2_example` directory, run `bash build.sh` to compile all sources in `./src`. After compilation, run `source ./install/setup.bash` to activate the current package environment.
-3. Run the whole-body control policy:
+3. Run the half-body demo controller:
 
 ```bash
-ros2 launch bxi_example_py_elf3 example_launch_demo_hw.py
+ros2 launch bxi_example_py_elf3 example_demo_hw.launch.py
 ```
 
-This starts the robot hardware and the control policy.
+This starts the robot hardware and the half-body demo controller.
 
 ### Tips for Running a Control Program
 

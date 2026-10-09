@@ -130,13 +130,13 @@ source /opt/bxi/bxi_ros2_pkg/setup.bash
 ```
 
 2. 在 `bxi_rl_controller_ros2_example` 目录中运行 `bash build.sh`，编译 `./src` 目录下的所有源码。若当前系统是 RK3588/aarch64，脚本会先检查每个 ONNX 的 RKNN 和构建契约；缺失时自动检查或安装匹配的 `rknn-toolkit2==2.3.2`，再生成 RKNN。编译完成后运行 `source ./install/setup.bash` 激活当前包环境。
-3. 运行全身控制策略：
+3. 运行半身演示控制程序：
 
 ```bash
-ros2 launch bxi_example_py_elf3 example_launch_demo.py
+ros2 launch bxi_example_py_elf3 example_demo.launch.py
 ```
 
-该命令会启动仿真环境和基于学习的控制程序。
+该命令会启动保留头部关节的半身仿真和演示控制程序。
 
 4. 启动键盘控制节点：
 
@@ -162,13 +162,13 @@ source /opt/bxi/bxi_ros2_pkg/setup.bash
 ```
 
 2. 在 `bxi_rl_controller_ros2_example` 目录中运行 `bash build.sh`，编译 `./src` 目录下的所有源码。若当前系统是 RK3588/aarch64，脚本会先检查每个 ONNX 的 RKNN 和构建契约；缺失时自动检查或安装匹配的 `rknn-toolkit2==2.3.2`，再生成 RKNN。编译完成后运行 `source ./install/setup.bash` 激活当前包环境。
-3. 运行全身控制策略：
+3. 运行半身演示控制程序：
 
 ```bash
-ros2 launch bxi_example_py_elf3 example_launch_demo_hw.py
+ros2 launch bxi_example_py_elf3 example_demo_hw.launch.py
 ```
 
-该命令会启动机器人硬件和控制策略。
+该命令会启动机器人硬件和半身演示控制程序。
 
 如果已经使用 `bxi_robot_config_tool` 生成 `/opt/bxi/robot_config.yaml`，硬件 launch 会自动读取该文件；文件不存在时继续使用内置默认值。也可以手动指定：
 

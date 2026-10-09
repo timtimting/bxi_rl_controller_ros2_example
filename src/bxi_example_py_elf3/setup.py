@@ -136,6 +136,8 @@ def get_data_files():
             if file.endswith((".pyc", ".pyo")):
                 continue
             file_path = os.path.join(root, file)
+            if not os.path.isfile(file_path):
+                continue
             # 计算相对于源目录的相对路径，以保持子目录结构
             relative_path = os.path.relpath(root, source_dir)
             install_dir = os.path.join(target_dir, relative_path)
@@ -156,6 +158,8 @@ def get_launch_files():
             if file.endswith((".pyc", ".pyo")):
                 continue
             file_path = os.path.join(root, file)
+            if not os.path.isfile(file_path):
+                continue
             # 计算相对于源目录的相对路径，以保持子目录结构
             relative_path = os.path.relpath(root, source_dir)
             install_dir = os.path.join(target_dir, relative_path)
