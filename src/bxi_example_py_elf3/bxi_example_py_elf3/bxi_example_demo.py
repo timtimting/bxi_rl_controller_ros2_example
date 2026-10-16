@@ -1,6 +1,7 @@
 from bxi_example_py_elf3.framework.platform.cpu_affinity import (
     bootstrap_process_scheduling,
     CpuAffinityPlan,
+    CpuAffinityRole,
 )
 
 _CPU_AFFINITY_PLAN = bootstrap_process_scheduling()
@@ -845,7 +846,8 @@ def main(args=None):
     node = BxiExample(cpu_affinity_plan=_CPU_AFFINITY_PLAN)
 
     executor = CommunicationExecutor(
-        node._communication_trace, node.get_clock().now, num_threads=3
+        node._communication_trace, node.get_clock().now, num_threads=3,
+        cpu_affinity=_CPU_AFFINITY_PLAN.roles[CpuAffinityRole.COMMUNICATION],
     )
     executor.trace_subscription(node.actuator_sub, "joint_rx")
     executor.trace_subscription(node.imu_sub, "imu_rx")

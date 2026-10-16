@@ -94,7 +94,7 @@ class ModNodeSpec:
         default_factory=lambda: ResolvedRuntime(name="host", mode="host")
     )
     cpu_affinity: CpuAffinitySpec = CpuAffinitySpec(
-        role=CpuAffinityRole.SHARED
+        role=CpuAffinityRole.COMMUNICATION
     )
 
 
@@ -272,7 +272,7 @@ class ModNodeManager:
                     spec.cpu_affinity,
                     context=f"Mod node '{spec.id}' scheduling.cpu_affinity",
                 )
-                or self._cpu_affinity_plan.roles[CpuAffinityRole.SHARED]
+                or self._cpu_affinity_plan.roles[CpuAffinityRole.COMMUNICATION]
             )
             for spec in specs
         }
@@ -282,12 +282,12 @@ class ModNodeManager:
         if has_process_nodes:
             self._log_router = SubprocessLogRouter(
                 loggers.config.subprocess,
-                cpu_affinity=self._cpu_affinity_plan.roles[CpuAffinityRole.SHARED],
+                cpu_affinity=self._cpu_affinity_plan.roles[CpuAffinityRole.BACKGROUND],
             )
         if specs:
             try:
                 self._runtime_worker = _ModRuntimeWorker(
-                    self._cpu_affinity_plan.roles[CpuAffinityRole.SHARED]
+                    self._cpu_affinity_plan.roles[CpuAffinityRole.BACKGROUND]
                 )
             except BaseException:
                 if self._log_router is not None:

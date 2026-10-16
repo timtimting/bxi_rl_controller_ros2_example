@@ -6,6 +6,7 @@ run on its own thread. A publish return is NOT proof of remote delivery.
 """
 
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import json
 import os
@@ -16,6 +17,7 @@ from threading import Event, Thread, get_ident, get_native_id
 import time
 
 from rclpy.executors import MultiThreadedExecutor
+from .cpu_affinity import configure_current_thread
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +49,7 @@ class CommunicationTrace:
         self._thread = None
         self._log = None
         self._context = None
+        self._cpu_affinity = None
         self._identity = {"pid": os.getpid(), "host": socket.gethostname(),
                           "architecture": platform.machine()}
         try:
@@ -93,10 +96,11 @@ class CommunicationTrace:
                     "value": value, "stamp_ns": stamp_ns,
                 })
 
-    def start(self, log, context=None):
+    def start(self, log, context=None, *, cpu_affinity=None):
         if self._thread is not None:
             return
         self._log, self._context = log, context
+        self._cpu_affinity = cpu_affinity
         self._stop.clear()
         self._thread = Thread(target=self._run, name="bxi-communication-watchdog", daemon=True)
         self._thread.start()
@@ -109,7 +113,16 @@ class CommunicationTrace:
         self._thread = None
 
     def _run(self):
-        self._emit("info", {"event": "started", "threshold_ms": self.timeout_ns / 1e6})
+        if self._cpu_affinity is not None:
+            try:
+                configure_current_thread(self._cpu_affinity, realtime_priority=0)
+            except (AttributeError, OSError) as exc:
+                self._emit("warning", {"event": "affinity_error", "error": str(exc)})
+        self._emit("info", {
+            "event": "started", "threshold_ms": self.timeout_ns / 1e6,
+            "cpu_affinity": sorted(os.sched_getaffinity(0)),
+            "scheduling_policy": os.sched_getscheduler(0),
+        })
         while not self._stop.wait(0.05):
             try:
                 self.poll()
@@ -213,13 +226,23 @@ class CommunicationTrace:
 class CommunicationExecutor(MultiThreadedExecutor):
     """Retain take_message metadata that the Humble executor otherwise drops.
 
-    Only explicitly registered subscriptions use this bridge. Group admission,
-    scheduling and business callback signatures remain those of Humble rclpy.
-    These two executor hooks must be revalidated when upgrading ROS versions.
+    Only registered subscriptions use the metadata bridge; all worker callbacks
+    use the optional communication affinity. Group admission and business
+    callback signatures remain those of Humble rclpy. The two executor hooks
+    and constructor pool wiring must be revalidated when upgrading ROS versions.
     """
 
-    def __init__(self, trace, clock, **kwargs):
+    def __init__(self, trace, clock, *, cpu_affinity=None, **kwargs):
         super().__init__(**kwargs)
+        if cpu_affinity is not None:
+            # Humble creates an empty pool in its constructor. Replace it before
+            # any work is submitted, retaining the requested worker count.
+            workers = self._executor._max_workers
+            self._executor.shutdown(wait=True)
+            self._executor = ThreadPoolExecutor(
+                max_workers=workers, thread_name_prefix="bxi-ros",
+                initializer=configure_current_thread, initargs=(frozenset(cpu_affinity),),
+            )
         self._trace, self._trace_clock = trace, clock
         self._traced_subscriptions = {}
 

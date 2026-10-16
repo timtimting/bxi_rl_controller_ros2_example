@@ -13,6 +13,7 @@ class CpuAffinityRole(str, Enum):
     """Stable role names shared by every supported platform."""
 
     CONTROL = "control"
+    COMMUNICATION = "communication"
     COMPUTE = "compute"
     BACKGROUND = "background"
     SHARED = "shared"
@@ -86,15 +87,8 @@ class CpuAffinityPlan:
         def group_score(group: frozenset[int]) -> int:
             return max(topology.capacity_by_cpu.get(cpu, 1) for cpu in group)
 
-        max_score = max(group_score(group) for group in groups)
-        performance_groups = tuple(
-            group for group in groups if group_score(group) == max_score
-        )
-        efficiency_groups = tuple(
-            group for group in groups if group_score(group) < max_score
-        )
         control_group = max(
-            performance_groups,
+            groups,
             key=lambda group: (group_score(group), max(group)),
         )
         control_cpu = min(control_group)
@@ -102,17 +96,51 @@ class CpuAffinityPlan:
         if not shared:
             shared = allowed
 
-        compute = frozenset().union(
-            *(group for group in performance_groups if group != control_group)
-        )
-        if not compute:
-            compute = shared
-        background = frozenset().union(*efficiency_groups)
-        if not background:
-            background = shared
+        remaining = tuple(group for group in groups if group != control_group)
+        if remaining:
+            # Reserve a whole physical core for ROS/DDS, including its SMT
+            # sibling. Prefer capacity over forcing communication onto E cores.
+            communication_group = max(
+                remaining, key=lambda group: (group_score(group), max(group))
+            )
+            communication = communication_group
+            compute_groups = tuple(
+                group for group in remaining if group != communication_group
+            )
+        else:
+            communication = shared
+            compute_groups = ()
+
+        if compute_groups:
+            # Rank the remaining cores again: slightly slower turbo bins are
+            # still useful compute cores after the two fastest were reserved.
+            compute_score = max(group_score(group) for group in compute_groups)
+            background_groups = tuple(
+                group for group in compute_groups if group_score(group) < compute_score
+            )
+            compute_groups = tuple(
+                group for group in compute_groups if group_score(group) == compute_score
+            )
+            if not background_groups and len(compute_groups) > 1:
+                background_groups = (min(compute_groups, key=min),)
+                compute_groups = tuple(
+                    group for group in compute_groups if group not in background_groups
+                )
+            compute = frozenset().union(*compute_groups)
+            # Three physical cores cannot provide four exclusive roles. Share
+            # background work with communication rather than the compute core.
+            background = (
+                frozenset().union(*background_groups)
+                if background_groups else communication
+            )
+        else:
+            # One/two-core allowances must remain usable; describe() makes the
+            # unavoidable sharing visible instead of claiming isolation.
+            compute = background = communication
 
         roles = {
             CpuAffinityRole.CONTROL: frozenset((control_cpu,)),
+            CpuAffinityRole.COMMUNICATION: frozenset(communication),
             CpuAffinityRole.COMPUTE: frozenset(compute),
             CpuAffinityRole.BACKGROUND: frozenset(background),
             CpuAffinityRole.SHARED: frozenset(shared),
@@ -149,13 +177,28 @@ class CpuAffinityPlan:
             f"{role.value}={format_cpu_set(self.roles[role])}"
             for role in (
                 CpuAffinityRole.CONTROL,
+                CpuAffinityRole.COMMUNICATION,
                 CpuAffinityRole.COMPUTE,
                 CpuAffinityRole.BACKGROUND,
                 CpuAffinityRole.SHARED,
                 CpuAffinityRole.ALL,
             )
         )
-        return f"CPU affinity roles: {role_text}"
+        dedicated_roles = (
+            CpuAffinityRole.CONTROL, CpuAffinityRole.COMMUNICATION,
+            CpuAffinityRole.COMPUTE, CpuAffinityRole.BACKGROUND,
+        )
+        overlaps = [
+            f"{a.value}/{b.value}={format_cpu_set(self.roles[a] & self.roles[b])}"
+            for i, a in enumerate(dedicated_roles)
+            for b in dedicated_roles[i + 1:]
+            if self.roles[a] & self.roles[b]
+        ]
+        sharing = (
+            "; limited CPU allowance, role sharing: " + ", ".join(overlaps)
+            if overlaps else ""
+        )
+        return f"CPU affinity roles: {role_text}{sharing}"
 
 
 def configure_current_thread(
@@ -189,11 +232,11 @@ def configure_current_thread(
 
 
 def bootstrap_process_scheduling() -> CpuAffinityPlan:
-    """Discover the full topology, then establish the non-control baseline."""
+    """Pin the initial thread before ROS/native libraries create their threads."""
 
     plan = CpuAffinityPlan.discover()
     configure_current_thread(
-        plan.roles[CpuAffinityRole.SHARED],
+        plan.roles[CpuAffinityRole.COMMUNICATION],
         realtime_priority=0,
     )
     return plan

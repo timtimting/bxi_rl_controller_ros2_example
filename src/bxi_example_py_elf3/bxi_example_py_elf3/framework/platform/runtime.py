@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 import math
+import os
 from pathlib import Path
 from queue import Empty, SimpleQueue
 import sys
@@ -31,6 +32,8 @@ from .cpu_affinity import (
     CpuAffinityRole,
     CpuAffinitySpec,
     read_cpu_affinity,
+    configure_current_thread,
+    format_cpu_set,
 )
 
 
@@ -280,7 +283,8 @@ class RobotControlRuntime:
         self._maintenance_thread = maintenance_thread
         try:
             self.communication_trace.start(
-                self._log, getattr(self._platform, "communication_diagnostics", None)
+                self._log, getattr(self._platform, "communication_diagnostics", None),
+                cpu_affinity=self.cpu_affinity_plan.roles[CpuAffinityRole.BACKGROUND],
             )
             maintenance_thread.start()
             self.scheduler.start()
@@ -430,6 +434,14 @@ class RobotControlRuntime:
         )
 
     def _maintenance_loop(self) -> None:
+        try:
+            configure_current_thread(
+                self.cpu_affinity_plan.roles[CpuAffinityRole.BACKGROUND],
+                realtime_priority=0,
+            )
+            self._log("info", "maintenance thread: CPU=" + format_cpu_set(os.sched_getaffinity(0)))
+        except (AttributeError, OSError) as exc:
+            self._log("warning", f"cannot configure maintenance thread CPU affinity: {exc}")
         period_sec = 1.0 / self.config.maintenance_hz
         next_maintenance_at = time.monotonic() + period_sec
         next_statistics_at = time.monotonic() + self.config.statistics_interval_sec

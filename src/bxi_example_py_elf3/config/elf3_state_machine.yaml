@@ -32,6 +32,8 @@ control_runtime:
   python_switch_interval_sec: 0.001
   # 先睡眠，距离绝对释放点最后200微秒时忙等；-1表示完全关闭忙等。
   spin_wait_us: 200
+  # 自动角色：control / communication / compute / background。
+  # 主线程在 ROS 初始化前使用 communication；控制、推理和后台线程分别切换角色。
   cpu_affinity: control
   realtime_priority: 50 #需要程序以root运行，或者sudo prlimit --pid "$$" --rtprio=99:99赋予当前终端权限
 
