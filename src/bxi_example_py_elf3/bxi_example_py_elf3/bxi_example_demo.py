@@ -579,6 +579,8 @@ class BxiExample(Node):
         self._update_joint_state(msg.name, msg.position, msg.velocity)
 
     def _update_joint_state(self, names, position, velocity):
+        error_to_log = None
+        first_joint_count = None
         with self.lock_in:
             try:
                 latest = self._joint_source.update(
@@ -589,17 +591,22 @@ class BxiExample(Node):
                 )
             except (TypeError, ValueError) as exc:
                 if not self._bad_joint_state_warned:
-                    self.get_logger().error(f"invalid named joint state: {exc}")
                     self._bad_joint_state_warned = True
-                return
-
-            if not self._joint_received:
-                self.get_logger().info(
-                    "ELF3 state layout initialized from message names: "
-                    f"{latest.layout.dof_num} joints"
-                )
-            self._joint_received = True
-            self._bad_joint_state_warned = False
+                    error_to_log = str(exc)
+            else:
+                if not self._joint_received:
+                    first_joint_count = latest.layout.dof_num
+                self._joint_received = True
+                self._bad_joint_state_warned = False
+        # Terminal/file output may block. Release the shared input lock before
+        # writing logs so other input readers/writers can acquire it.
+        if error_to_log is not None:
+            self.get_logger().error(f"invalid named joint state: {error_to_log}")
+        elif first_joint_count is not None:
+            self.get_logger().info(
+                "ELF3 state layout initialized from message names: "
+                f"{first_joint_count} joints"
+            )
 
     def joy_callback(self, msg):
         received_at = time.monotonic()
@@ -653,15 +660,22 @@ class BxiExample(Node):
             return
 
         with self.lock_in:
-            if not self._joint_received:
-                if not self._motor_override_waiting_for_joints_warned:
-                    self.get_logger().warning(
-                        "motor override ignored before the robot joint layout "
-                        "is initialized"
-                    )
-                    self._motor_override_waiting_for_joints_warned = True
-                return
-            robot_layout = self._joint_source.view.layout
+            waiting_for_joints = not self._joint_received
+            warn_waiting = (
+                waiting_for_joints
+                and not self._motor_override_waiting_for_joints_warned
+            )
+            if warn_waiting:
+                self._motor_override_waiting_for_joints_warned = True
+            if not waiting_for_joints:
+                robot_layout = self._joint_source.view.layout
+        if waiting_for_joints:
+            if warn_waiting:
+                self.get_logger().warning(
+                    "motor override ignored before the robot joint layout "
+                    "is initialized"
+                )
+            return
 
         try:
             submitted_names = self._motor_override.submit(
@@ -753,11 +767,12 @@ class BxiExample(Node):
             self.linear_acceleration[:] = acceleration.x, acceleration.y, acceleration.z
             self._imu_received = True
             self._imu_last_received_at = time.monotonic()
-            if not self._imu_first_received_logged:
-                self._imu_first_received_logged = True
-                self.get_logger().info(
-                    f"received first IMU frame on {self.topic_prefix}imu_data"
-                )
+            first_imu_frame = not self._imu_first_received_logged
+            self._imu_first_received_logged = True
+        if first_imu_frame:
+            self.get_logger().info(
+                f"received first IMU frame on {self.topic_prefix}imu_data"
+            )
 
     def touch_callback(self, _msg):
         pass

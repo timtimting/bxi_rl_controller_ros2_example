@@ -150,6 +150,91 @@ def test_remote_callback_completes_while_control_framework_is_locked(demo):
     assert list(node.pending_remote_events) == ["walk"]
 
 
+@pytest.mark.parametrize(
+    "case,log_level",
+    [("joint_first", "info"), ("joint_invalid", "error"),
+     ("imu_first", "info"), ("override_waiting", "warning")],
+)
+def test_slow_input_log_does_not_block_remote_reception(demo, case, log_level):
+    node = controller(demo)
+    node._joint_source = demo.NamedJointStateSource(dtype=np.float64)
+    node._joint_received = False
+    node._bad_joint_state_warned = False
+    node.imu_required = False
+    node.topic_prefix = "simulation/"
+    node._imu_first_received_logged = False
+    node._motor_override_waiting_for_joints_warned = False
+    imu = SimpleNamespace(
+        orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0),
+        angular_velocity=SimpleNamespace(x=0.0, y=0.0, z=0.0),
+        linear_acceleration=SimpleNamespace(x=0.0, y=0.0, z=0.0),
+    )
+    callbacks = {
+        "joint_first": lambda: demo.BxiExample._update_joint_state(
+            node, ["test_joint"], [0.0], [0.0]
+        ),
+        "joint_invalid": lambda: demo.BxiExample._update_joint_state(
+            node, ["test_joint"], [], []
+        ),
+        "imu_first": lambda: demo.BxiExample.imu_callback(node, imu),
+        "override_waiting": lambda: demo.BxiExample.motor_override_callback(
+            node, SimpleNamespace(actuators_name=["test_joint"])
+        ),
+    }
+    entered_log, release_log, remote_completed = Event(), Event(), Event()
+    errors = []
+    logger = node.get_logger()
+
+    def slow_log(_message):
+        entered_log.set()
+        if not release_log.wait(3.0):
+            raise AssertionError("test did not release the blocked log")
+
+    getattr(logger, log_level).side_effect = slow_log
+
+    def run_input():
+        try:
+            callbacks[case]()
+        except BaseException as exc:
+            errors.append(exc)
+
+    def run_remote():
+        try:
+            receive(demo, node, message(), 1.0)
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            remote_completed.set()
+
+    input_worker = Thread(target=run_input, daemon=True)
+    remote_worker = Thread(target=run_remote, daemon=True)
+    try:
+        input_worker.start()
+        assert entered_log.wait(1.0), errors
+        remote_worker.start()
+        completed_while_logging = remote_completed.wait(1.0)
+    finally:
+        release_log.set()
+        input_worker.join(1.0)
+        if remote_worker.ident is not None:
+            remote_worker.join(1.0)
+    assert completed_while_logging, "log output held the shared input lock"
+    assert not errors
+    np.testing.assert_allclose(node.raw_cmd_vel, (0.5, 0, 0))
+    assert list(node.pending_remote_events) == ["walk"]
+    # First-frame logs and invalid-input suppression still happen only once.
+    callbacks[case]()
+    assert getattr(logger, log_level).call_count == 1
+    if case == "joint_first":
+        assert node._joint_received
+    elif case == "joint_invalid":
+        assert not node._joint_received and node._bad_joint_state_warned
+    elif case == "imu_first":
+        assert node._imu_received and node._imu_first_received_logged
+    else:
+        assert node._motor_override_waiting_for_joints_warned
+
+
 def test_repeated_full_state_has_no_duplicate_button_event_and_recovers_lost_stop(demo):
     node = controller(demo)
     receive(demo, node, message(), 1.0)
