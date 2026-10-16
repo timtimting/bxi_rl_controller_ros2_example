@@ -285,6 +285,7 @@ class RobotControlRuntime:
             self.communication_trace.start(
                 self._log, getattr(self._platform, "communication_diagnostics", None),
                 cpu_affinity=self.cpu_affinity_plan.roles[CpuAffinityRole.BACKGROUND],
+                summary_context=getattr(self._platform, "communication_summary", None),
             )
             maintenance_thread.start()
             self.scheduler.start()

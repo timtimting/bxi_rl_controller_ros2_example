@@ -526,6 +526,13 @@ class BxiExample(Node):
             ros_now_ns=self.get_clock().now().nanoseconds,
         )
 
+    def communication_summary(self):
+        """Small watchdog snapshot without ROS graph queries or control locks."""
+        return {
+            "state": self.runtime.framework.current_state_name,
+            "remote_input_fresh": self._remote_input.is_fresh(time.monotonic()),
+        }
+
     def communication_diagnostics(self):
         """Watchdog-only ROS graph queries; never acquire control/input locks."""
         def endpoint_info(endpoints):

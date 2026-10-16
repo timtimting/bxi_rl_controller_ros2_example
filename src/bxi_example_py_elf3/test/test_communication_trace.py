@@ -25,7 +25,18 @@ def recorder():
 
 
 def report(trace):
-    return json.loads(trace._log.call_args.args[1].split(" ", 1)[1])
+    return reports(trace)[-1]
+
+
+def reports(trace):
+    return [json.loads(call.args[1].split(" ", 1)[1])
+            for call in trace._log.call_args_list
+            if call.args[1].startswith("communication_trace ")]
+
+
+def summaries(trace):
+    return [call.args for call in trace._log.call_args_list
+            if not call.args[1].startswith("communication_trace ")]
 
 
 def advance(clock, delta):
@@ -58,11 +69,15 @@ def test_inflight_stall_is_visible_before_control_returns_and_then_recovers(reco
     assert data["stacks"]["control"]
     trace.record("command_tx", stamp_ns=43)
     trace.enter("waiting_next_cycle")
-    advance(clock, 1_000_000_000)
+    advance(clock, 50_000_000)
     trace.record("command_tx", stamp_ns=44)
     trace.enter("waiting_next_cycle")
     trace.poll()
-    assert report(trace)["event"] == "recovered"
+    assert len(reports(trace)) == 1
+    severity, text = summaries(trace)[-1]
+    assert severity == "info"
+    assert "恢复" in text
+    assert "stamp_ns=42→43" in text
 
 
 def test_transient_gap_retains_old_and_new_command_stamps(recorder):
@@ -122,13 +137,116 @@ def test_recording_and_repeated_fault_logs_are_bounded(recorder):
         advance(clock, 250_000_000)
         trace.record("joint_rx", stamp_ns=1, ros_now_ns=clock[1])
     assert len(trace._incidents) == 32
+    advance(clock, 250_000_000)
     trace.poll()
     for _ in range(10):
         advance(clock, 50_000_000)
         trace.poll()
-    assert trace._log.call_count == 1
+    assert len(reports(trace)) == 1
+    assert len(summaries(trace)) == 1
     assert len(trace._history) == 10
     assert len(trace._pending) <= 32
+
+
+def test_idle_remote_repeats_short_summary_without_requerying_graph(recorder):
+    trace, clock = recorder
+    trace._context = Mock(return_value={"state": "com.bxi.basic_actions/zero_torque"})
+    trace._summary_context = Mock(return_value={"state": "com.bxi.basic_actions/zero_torque",
+                                               "remote_input_fresh": False})
+    for _ in range(16):
+        trace.record("remote_rx")
+    for _ in range(326):
+        trace.record("command_tx")
+        for _ in range(18):
+            trace.record("joint_rx")
+        for _ in range(10):
+            trace.record("imu_rx")
+        trace.enter("waiting_next_cycle")
+        trace.poll()
+        advance(clock, 20_000_000)
+    assert len(reports(trace)) == 1
+    assert len(summaries(trace)) == 2  # First warning, then five seconds later.
+    trace._context.assert_called_once()
+    text = summaries(trace)[-1][1]
+    assert "遥控输入停更5.22s" in text
+    assert "电机命令=50.0Hz" in text
+    assert "关节反馈=900.0Hz" in text
+    assert "IMU=500.0Hz" in text
+    assert "遥控输入=0.0Hz" in text
+    assert "状态=zero_torque" in text
+    assert "遥控有效=否" in text
+    assert report(trace)["stalled_streams"] == ["remote_rx"]
+
+
+def test_new_control_stall_bypasses_remote_summary_throttle(recorder):
+    trace, clock = recorder
+    trace.record("remote_rx")
+    for _ in range(7):
+        trace.record("command_tx")
+        trace.enter("waiting_next_cycle")
+        trace.poll()
+        advance(clock, 50_000_000)
+    assert len(reports(trace)) == 1
+    trace.record("command_tx")
+    trace.enter("framework_lock")
+    for _ in range(6):
+        trace.poll()
+        advance(clock, 50_000_000)
+    assert len(reports(trace)) == 2
+    assert report(trace)["diagnostic_id"] == 2
+    assert report(trace)["blocked_lanes"] == ["control"]
+    assert report(trace)["stacks"]["control"]
+    trace.record("command_tx")
+    trace.enter("waiting_next_cycle")
+    trace.poll()
+    assert len(reports(trace)) == 2  # Partial recovery needs only a short line.
+    assert "遥控输入停更" in summaries(trace)[-1][1]
+    assert "卡在" not in summaries(trace)[-1][1]
+
+
+def test_recovery_rearms_detail_for_next_outage(recorder):
+    trace, clock = recorder
+    trace.record("remote_rx", stamp_ns=1)
+    for _ in range(7):
+        trace.poll()
+        advance(clock, 50_000_000)
+    trace.record("remote_rx", stamp_ns=2)
+    trace.poll()
+    assert len(reports(trace)) == 1
+    severity, text = summaries(trace)[-1]
+    assert severity == "info" and "恢复" in text
+    assert "stamp_ns=1→2" in text
+    for _ in range(7):
+        advance(clock, 50_000_000)
+        trace.poll()
+    assert len(reports(trace)) == 2
+
+
+def test_continuously_stale_stamps_do_not_dump_json_per_frame(recorder):
+    trace, clock = recorder
+    trace._context = Mock(return_value={})
+    for _ in range(310):
+        trace.record("joint_rx", stamp_ns=clock[1] - 1_000_000_000, ros_now_ns=clock[1])
+        trace.poll()
+        advance(clock, 20_000_000)
+    assert len(reports(trace)) == 1
+    assert len(summaries(trace)) == 2
+    trace._context.assert_called_once()
+    assert len(trace._pending) <= 32
+    # A new clock anomaly must remain visible while the stale-stamp fault repeats.
+    clock[1] += 2_000_000_000
+    trace.poll()
+    assert len(reports(trace)) == 2
+    assert any(i["kind"] == "wall_clock_jump" for i in report(trace)["incidents"])
+    # After quiet traffic, a new stale-stamp episode receives a fresh detail.
+    for _ in range(520):
+        trace.record("joint_rx")
+        trace.poll()
+        advance(clock, 20_000_000)
+    before = len(reports(trace))
+    trace.record("joint_rx", stamp_ns=clock[1] - 1_000_000_000, ros_now_ns=clock[1])
+    trace.poll()
+    assert len(reports(trace)) == before + 1
 
 
 def test_executor_preserves_metadata_and_business_callback_exception(recorder):
@@ -189,6 +307,8 @@ def test_independent_watchdog_observes_blocked_control_thread():
     records = []
 
     def log(_severity, text):
+        if not text.startswith("communication_trace "):
+            return
         data = json.loads(text.split(" ", 1)[1])
         records.append(data)
         if data["event"] == "stall":
