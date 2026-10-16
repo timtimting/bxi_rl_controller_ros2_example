@@ -197,6 +197,9 @@ class RobotControlRuntime:
         self._logger = self.loggers.framework("runtime")
         self._external_fatal_callback = fatal_callback
         self._framework_lock = Lock()
+        # The edge adapter only owns its button history. Receiving remote input
+        # must not wait for inference/state updates holding _framework_lock.
+        self._remote_event_lock = Lock()
         self._stop_event = Event()
         self._maintenance_thread: Thread | None = None
         self._deadline_miss_queue: SimpleQueue[dict[str, object]] = SimpleQueue()
@@ -332,7 +335,7 @@ class RobotControlRuntime:
         *,
         sync_only: bool = False,
     ) -> list[str]:
-        with self._framework_lock:
+        with self._remote_event_lock:
             return self.framework.extract_remote_events(values, sync_only=sync_only)
 
     def request_state(

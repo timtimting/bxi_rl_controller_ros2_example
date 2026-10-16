@@ -179,7 +179,7 @@ struct SystemMutexConfig {
 struct RemoteConfig {
     std::string js_device = "/dev/input/jsBattleDragon";
     std::string output_conflict_policy = "last_wins";
-    bool publish_on_change = true;
+    bool publish_on_change = false;
     std::map<std::string, std::string> source_aliases;
     std::map<std::string, CurveConfig> curves;
     std::map<std::string, SourceRuntimeConfig> source_runtime;

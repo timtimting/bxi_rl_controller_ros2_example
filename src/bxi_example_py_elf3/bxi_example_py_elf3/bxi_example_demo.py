@@ -38,6 +38,7 @@ from bxi_example_py_elf3.framework.joints import (
 )
 from bxi_example_py_elf3.framework.mod_api import MotorFrame
 from bxi_example_py_elf3.imu_freshness import ImuStampObserver
+from bxi_example_py_elf3.remote_input import RemoteInputMonitor
 from bxi_example_py_elf3.framework.platform import (
     NamedJointStateSource,
     RobotControlRuntime,
@@ -137,6 +138,7 @@ class BxiExample(Node):
         self._next_imu_startup_warning = 0.0
         self.raw_cmd_vel = np.zeros(3, dtype=np.float32)
         self.pending_remote_events = deque()
+        self._next_remote_warning = 0.0
         self._joint_source = NamedJointStateSource(dtype=np.float64)
         self._joint_received = False
         self._bad_joint_state_warned = False
@@ -214,6 +216,13 @@ class BxiExample(Node):
             self.get_parameter("/imu_protection_allow_release").value
         )
 
+        self.declare_parameter("/remote_timeout_sec", 0.3)
+        self.declare_parameter("/remote_max_age_sec", 0.3)
+        self._remote_input = RemoteInputMonitor(
+            timeout_sec=float(self.get_parameter("/remote_timeout_sec").value),
+            max_age_sec=float(self.get_parameter("/remote_max_age_sec").value),
+        )
+
         self.motor_override_topic = self.topic_prefix + "actuators_cmds_override"
         self.motor_override_timeout_sec = 0.2
         self.motor_override_release_blend_sec = 0.2
@@ -239,6 +248,7 @@ class BxiExample(Node):
     def init_pub_sub(self):
         # 订阅和发布主题
         self.io_callback_group = MutuallyExclusiveCallbackGroup()
+        self.remote_callback_group = MutuallyExclusiveCallbackGroup()
         self.status_callback_group = MutuallyExclusiveCallbackGroup()
         qos = QoSProfile(
             depth=1,
@@ -289,7 +299,7 @@ class BxiExample(Node):
             "motion_commands",
             self.joy_callback,
             qos,
-            callback_group=self.io_callback_group,
+            callback_group=self.remote_callback_group,
         )
         self.motor_override_sub = self.create_subscription(
             bxiMsg.ActuatorCmds,
@@ -309,6 +319,12 @@ class BxiExample(Node):
         self.lock_in = Lock()
         self.lock_ou = self.lock_in  # Lock()
 
+        self.get_logger().info(
+            "remote input watchdog: "
+            f"timeout={self._remote_input.timeout_sec:.3f}s, "
+            f"max_source_age={self._remote_input.max_age_ns / 1e9:.3f}s; "
+            "timeout clears remote velocity and pending events"
+        )
         self.get_logger().info(
             "motor override input: "
             f"topic={self.motor_override_topic}, "
@@ -370,6 +386,10 @@ class BxiExample(Node):
         """Copy the latest ROS inputs into one coherent framework observation."""
         self._check_imu_runtime_safety()
         with self.lock_in:
+            remote_expired = self._remote_input.expire(time.monotonic())
+            if remote_expired:
+                self.raw_cmd_vel.fill(0.0)
+                self.pending_remote_events.clear()
             latest_joints = self._joint_source.view
             if self._joint_snapshot is None:
                 self._joint_snapshot = JointStateBuffer(
@@ -400,6 +420,12 @@ class BxiExample(Node):
                 else tuple(self.pending_remote_events)
             )
             self.pending_remote_events.clear()
+        if remote_expired:
+            self.get_logger().warning(
+                "remote input timeout: no valid motion_commands for "
+                f"{self._remote_input.timeout_sec:.3f}s; "
+                "clearing remote velocity and pending events"
+            )
         assert self._observation is not None
         return self._observation, events
 
@@ -488,6 +514,8 @@ class BxiExample(Node):
         info = self.runtime.snapshot(include_graph=True)
         if info is None:
             return
+        with self.lock_in:
+            info["remote_input"] = self._remote_input.snapshot(time.monotonic())
         now = self.get_clock().now()
         info.update(
             {
@@ -574,17 +602,38 @@ class BxiExample(Node):
             self._bad_joint_state_warned = False
 
     def joy_callback(self, msg):
-        events = self.runtime.extract_remote_events(msg, sync_only=self.step < 2)
+        received_at = time.monotonic()
+        velocity = (msg.vel_des.x, msg.vel_des.y, msg.yawdot_des)
+        stamp_ns = msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec
         with self.lock_in:
-            self.raw_cmd_vel[:] = (
-                msg.vel_des.x,
-                msg.vel_des.y,
-                msg.yawdot_des,
+            status = self._remote_input.observe(
+                velocity,
+                stamp_ns=stamp_ns,
+                received_at=received_at,
+                ros_now_ns=self.get_clock().now().nanoseconds,
             )
-            self.pending_remote_events.extend(events)
-
-        if self.step < 2:
-            return
+            accepted = status in ("fresh", "recovered")
+            if accepted:
+                # Reconnecting with a held button must not replay an old action.
+                if status == "recovered":
+                    self.pending_remote_events.clear()
+                events = self.runtime.extract_remote_events(
+                    msg, sync_only=self.step < 2 or status == "recovered"
+                )
+                self.raw_cmd_vel[:] = velocity
+                self.pending_remote_events.extend(events)
+            warn = not accepted and received_at >= self._next_remote_warning
+            if warn:
+                self._next_remote_warning = received_at + 1.0
+        if warn:
+            self.get_logger().warning(
+                f"dropping remote input: {status}; "
+                "check publisher timestamps and clock synchronization"
+            )
+        elif status == "recovered":
+            self.get_logger().info(
+                "remote input recovered; held buttons synchronized without replay"
+            )
 
     def motor_override_callback(self, msg):
         """Validate and atomically replace the final named-joint override."""

@@ -188,6 +188,7 @@ ros2 launch bxi_example_py_elf3 example_demo_hw.launch.py \
 1. 话题中的控制命令必须按照指定关节顺序发送。关节顺序请参考 `src/bxi_example_py_elf3` 中的示例。
 2. 仿真环境和硬件机器人都有失控保护。如果控制命令丢失超过 100 ms，保护会被触发，电机将失能，系统必须重新初始化后才能继续使用。
 3. 遥控器默认设备为 `/dev/input/jsBattleDragon`。如果 udev 规则尚未配置，或调试时只想使用系统当前识别到的手柄设备，可将配置中的设备路径临时改为 `/dev/input/js0`。
+4. `remote_controller` 默认每 10 ms 重发完整遥控状态。`bxi_example_py_elf3_demo` 超过 300 ms 未接收有效遥控消息时，会清零遥控速度和待处理遥控事件，不自动切换动作状态。硬件和仿真 demo launch 可通过 `remote_timeout_sec` 和 `remote_max_age_sec` 调整阈值；接收状态见状态话题 JSON 的 `remote_input`。旧消息校验、恢复行为和调试说明见 [遥控器说明](src/remote_controller/README.md#周期发布与控制端超时保护)。
 
 ### 启动流程
 

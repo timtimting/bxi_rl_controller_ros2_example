@@ -28,6 +28,9 @@ public:
         com_pub_ = this->create_publisher<communication::msg::MotionCommands>(
             "motion_commands", 20);
         timer_ = this->create_wall_timer(10ms, std::bind(&COMPublisher::timer_callback, this));
+        RCLCPP_INFO(
+            this->get_logger(), "motion_commands publishing: %s (10 ms timer)",
+            mapper_.config().publish_on_change ? "on change" : "periodic full state");
 
         input_manager_.reset(new remote_controller::InputDeviceManager(
             mapper_.config(),

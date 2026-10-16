@@ -283,7 +283,8 @@ controls:
 #将统一的controls映射到输出
 outputs:
   conflict_policy: first_wins
-  publish_on_change: true
+  # 每 10 ms 重发完整状态，避免一次停止指令丢失后长期沿用旧速度。
+  publish_on_change: false
 
   #连续的模拟值
   analog:

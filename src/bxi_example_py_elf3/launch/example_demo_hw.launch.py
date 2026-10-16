@@ -109,6 +109,16 @@ def generate_launch_description():
                 default_value="0.1",
                 description="Seconds without IMU data before locked protection",
             ),
+            DeclareLaunchArgument(
+                "remote_timeout_sec",
+                default_value="0.3",
+                description="Seconds without valid remote input before clearing velocity",
+            ),
+            DeclareLaunchArgument(
+                "remote_max_age_sec",
+                default_value="0.3",
+                description="Maximum remote source stamp age or future clock offset",
+            ),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(cameras_launch),
             ),
@@ -128,6 +138,8 @@ def generate_launch_description():
                             "imu_runtime_timeout_sec"
                         )
                     },
+                    {"/remote_timeout_sec": LaunchConfiguration("remote_timeout_sec")},
+                    {"/remote_max_age_sec": LaunchConfiguration("remote_max_age_sec")},
                 ],
                 emulate_tty=True,
                 arguments=[("__log_level:=debug")],

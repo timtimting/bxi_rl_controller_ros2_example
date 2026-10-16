@@ -1,6 +1,8 @@
 import os
 from ament_index_python.packages import get_package_share_path
 from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 def generate_launch_description():
@@ -14,6 +16,8 @@ def generate_launch_description():
 
     return LaunchDescription(
         [
+            DeclareLaunchArgument("remote_timeout_sec", default_value="0.3"),
+            DeclareLaunchArgument("remote_max_age_sec", default_value="0.3"),
             Node(
                 package="mujoco",
                 executable="simulation",
@@ -33,6 +37,8 @@ def generate_launch_description():
                 parameters=[
                     {"/topic_prefix": "simulation/"},
                     {"/state_machine_config": state_machine_config},
+                    {"/remote_timeout_sec": LaunchConfiguration("remote_timeout_sec")},
+                    {"/remote_max_age_sec": LaunchConfiguration("remote_max_age_sec")},
                 ],
                 emulate_tty=True,
             ),
