@@ -51,6 +51,9 @@ USD 或 XML 格式请参考：[unofficial models](https://github.com/MelodyAI/Ti
 
 ### 硬件和仿真环境切换
 
+运行中的控制/硬件通信停顿可使用[内置通信异常记录](docs/communication_trace.md)定位；
+完整的双端证据需要同时部署文档中的硬件节点补丁。
+
 1. `hw` 是 `hardware` 的缩写，所有带 `hw` 后缀的 `launch` 文件都会启动真实硬件，请谨慎使用。
 2. 仿真环境和机器人硬件共用同一套控制程序。只需要使用不同的 launch 文件即可在仿真和硬件之间切换。仿真代码的话题带有 `simulation/` 前缀，硬件话题带有 `hardware/` 前缀。详情请参考 `src/bxi_example_py_elf3` 中的话题参数配置。
 3. 仿真环境中的机器人启动时带有虚拟悬挂，启动后需要释放悬挂。机器人硬件运行时会忽略悬挂相关信号。

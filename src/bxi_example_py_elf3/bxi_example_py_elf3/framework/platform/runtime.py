@@ -25,6 +25,7 @@ from bxi_example_py_elf3.framework.runtime.controller import RobotControlFramewo
 from bxi_example_py_elf3.framework.runtime.logging import LoggingConfig, ScopedLoggers
 from bxi_example_py_elf3.framework.runtime.mod_nodes import ExecutorLike
 from .api import ControlPlatformAdapter
+from .communication_trace import CommunicationTrace
 from .cpu_affinity import (
     CpuAffinityPlan,
     CpuAffinityRole,
@@ -177,6 +178,7 @@ class RobotControlRuntime:
         platform: ControlPlatformAdapter,
         cpu_affinity_plan: CpuAffinityPlan,
         fatal_callback: Callable[[str], None] | None = None,
+        communication_trace: CommunicationTrace | None = None,
     ) -> None:
         self.config = ControlRuntimeConfig.from_mapping(
             system_config.get("control_runtime")
@@ -209,6 +211,8 @@ class RobotControlRuntime:
         self._closed = False
         self._original_python_switch_interval: float | None = None
         self._last_control_events: tuple[str, ...] = ()
+        self._last_cycle_phases_ns: tuple[int, int, int, int] | None = None
+        self.communication_trace = communication_trace or CommunicationTrace()
         self._last_reported_total_cycles = 0
         self._last_reported_total_budget_overruns = 0
         self._last_reported_total_deadline_misses = 0
@@ -275,10 +279,14 @@ class RobotControlRuntime:
         )
         self._maintenance_thread = maintenance_thread
         try:
+            self.communication_trace.start(
+                self._log, getattr(self._platform, "communication_diagnostics", None)
+            )
             maintenance_thread.start()
             self.scheduler.start()
             self._started = True
         except BaseException:
+            self.communication_trace.stop()
             self._stop_event.set()
             self.scheduler.stop()
             self._join_maintenance_thread()
@@ -287,6 +295,7 @@ class RobotControlRuntime:
 
     def stop(self) -> None:
         self._stop_event.set()
+        self.communication_trace.stop()
         first_error: Exception | None = None
         try:
             self.scheduler.stop()
@@ -371,14 +380,27 @@ class RobotControlRuntime:
         return info
 
     def _run_control_cycle(self) -> ControlCycleResult:
+        self._last_cycle_phases_ns = None
+        trace = getattr(self, "communication_trace", None)
+        if trace is not None:
+            trace.enter("input_snapshot")
+        # The readiness check also takes the platform input lock after startup.
+        # Include that wait in the input phase instead of leaving it unaccounted.
+        snapshot_started_ns = time.monotonic_ns()
         if not self._platform.startup_step(time.monotonic()):
             return ControlCycleResult(state="startup", active=False)
 
         observation, events = self._platform.snapshot_control_inputs()
         events = tuple(events)
         self._last_control_events = events
+        snapshot_finished_ns = time.monotonic_ns()
 
+        if trace is not None:
+            trace.enter("framework_lock")
         with self._framework_lock:
+            if trace is not None:
+                trace.enter("state_update")
+            framework_acquired_ns = time.monotonic_ns()
             cycle_period_sec = self.scheduler.period_sec
             frame = self.framework.update(
                 observation,
@@ -387,9 +409,21 @@ class RobotControlRuntime:
             )
             state_name = self.framework.current_state_name
             next_period_sec = self.framework.desired_control_period
+        framework_finished_ns = time.monotonic_ns()
 
+        if trace is not None:
+            trace.enter("command_publish")
         if frame is not None:
             self._platform.publish_motor_frame(frame)
+        publish_finished_ns = time.monotonic_ns()
+        self._last_cycle_phases_ns = (
+            snapshot_finished_ns - snapshot_started_ns,
+            framework_acquired_ns - snapshot_finished_ns,
+            framework_finished_ns - framework_acquired_ns,
+            publish_finished_ns - framework_finished_ns,
+        )
+        if trace is not None:
+            trace.enter("waiting_next_cycle")
         return ControlCycleResult(
             state=state_name,
             next_period_sec=next_period_sec,
@@ -426,7 +460,11 @@ class RobotControlRuntime:
                 next_statistics_at = now + self.config.statistics_interval_sec
 
     def _enqueue_deadline_miss(self, miss: dict[str, object]) -> None:
-        self._deadline_miss_queue.put(dict(miss))
+        event = dict(miss)
+        phases = self._last_cycle_phases_ns
+        if phases is not None:
+            event["cycle_phases_ms"] = tuple(value / 1_000_000.0 for value in phases)
+        self._deadline_miss_queue.put(event)
 
     def _drain_deadline_misses(self) -> None:
         tolerance_ms = self.config.deadline_tolerance_sec * 1000.0
@@ -471,6 +509,15 @@ class RobotControlRuntime:
                 "初步判定：同时存在调度唤醒延迟和"
                 "周期完成截止超限；"
             )
+        phases = summary.get("slowest_cycle_phases_ms")
+        phase_detail = (
+            f"最慢周期分解（{summary['slowest_cycle_state']}）："
+            f"输入快照={phases[0]:.2f} ms，"
+            f"等待框架锁={phases[1]:.2f} ms，"
+            f"状态/推理={phases[2]:.2f} ms，"
+            f"命令发布={phases[3]:.2f} ms；"
+            if phases is not None else ""
+        )
         logged = self._log(
             "warning",
             "控制周期时序异常："
@@ -483,6 +530,7 @@ class RobotControlRuntime:
             f"最大周期执行耗时{summary['max_cycle_ms']:.2f} ms"
             f"（预算{budget_ms:.2f} ms，目标周期{period_ms:.2f} ms）"
             f"{finish_detail}。"
+            f"{phase_detail}"
             f"{conclusion}"
             f"启动以来累计异常{summary['latest_count']}次。",
         )
@@ -524,6 +572,11 @@ class RobotControlRuntime:
         summary["max_wake_late_ms"] = max(
             float(summary["max_wake_late_ms"]), wake_late_ms
         )
+        # Keep one actual cycle's breakdown rather than combining maxima from
+        # unrelated cycles, which would misidentify where a long stall happened.
+        if cycle_ms >= float(summary["max_cycle_ms"]):
+            summary["slowest_cycle_phases_ms"] = miss.get("cycle_phases_ms")
+            summary["slowest_cycle_state"] = str(miss["state"])
         summary["max_cycle_ms"] = max(
             float(summary["max_cycle_ms"]), cycle_ms
         )

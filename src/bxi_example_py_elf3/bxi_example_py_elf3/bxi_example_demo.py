@@ -8,7 +8,7 @@ _CPU_AFFINITY_PLAN = bootstrap_process_scheduling()
 import rclpy
 from rclpy.node import Node
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
-from rclpy.executors import MultiThreadedExecutor
+from rclpy.utilities import get_rmw_implementation_identifier
 from rclpy.qos import QoSProfile, qos_profile_sensor_data
 import communication.msg as bxiMsg
 import communication.srv as bxiSrv
@@ -43,6 +43,10 @@ from bxi_example_py_elf3.framework.platform import (
     NamedJointStateSource,
     RobotControlRuntime,
     RobotObservation,
+)
+from bxi_example_py_elf3.framework.platform.communication_trace import (
+    CommunicationExecutor,
+    CommunicationTrace,
 )
 
 robot_name = "elf3"
@@ -104,6 +108,7 @@ class BxiExample(Node):
         super().__init__("bxi_example_py")
 
         self._shutting_down = Event()
+        self._communication_trace = CommunicationTrace()
 
         # 加载运行参数
         self.load_files()
@@ -161,6 +166,7 @@ class BxiExample(Node):
             platform=self,
             cpu_affinity_plan=cpu_affinity_plan,
             fatal_callback=self._on_control_fatal,
+            communication_trace=self._communication_trace,
         )
         self.state_machine_info_timer = None
         if self.state_machine_info_hz > 0.0:
@@ -247,7 +253,11 @@ class BxiExample(Node):
     # ---------------------------------------------------------------------------- #
     def init_pub_sub(self):
         # 订阅和发布主题
-        self.io_callback_group = MutuallyExclusiveCallbackGroup()
+        # Independent input streams can be scheduled concurrently; each group
+        # still prevents overlapping callbacks that share its local state.
+        self.imu_callback_group = MutuallyExclusiveCallbackGroup()
+        self.joint_callback_group = MutuallyExclusiveCallbackGroup()
+        self.auxiliary_callback_group = MutuallyExclusiveCallbackGroup()
         self.remote_callback_group = MutuallyExclusiveCallbackGroup()
         self.status_callback_group = MutuallyExclusiveCallbackGroup()
         qos = QoSProfile(
@@ -271,28 +281,28 @@ class BxiExample(Node):
             self.topic_prefix + "odom",
             self.odom_callback,
             qos,
-            callback_group=self.io_callback_group,
+            callback_group=self.auxiliary_callback_group,
         )
         self.actuator_sub = self.create_subscription(
             bxiMsg.ActuatorStates,
             self.topic_prefix + "actuator_states",
             self.actuator_callback,
             qos,
-            callback_group=self.io_callback_group,
+            callback_group=self.joint_callback_group,
         )
         self.imu_sub = self.create_subscription(
             sensor_msgs.msg.Imu,
             self.topic_prefix + "imu_data",
             self.imu_callback,
             qos,
-            callback_group=self.io_callback_group,
+            callback_group=self.imu_callback_group,
         )
         self.touch_sub = self.create_subscription(
             bxiMsg.TouchSensor,
             self.topic_prefix + "touch_sensor",
             self.touch_callback,
             qos,
-            callback_group=self.io_callback_group,
+            callback_group=self.auxiliary_callback_group,
         )
         self.joy_sub = self.create_subscription(
             bxiMsg.MotionCommands,
@@ -306,7 +316,7 @@ class BxiExample(Node):
             self.motor_override_topic,
             self.motor_override_callback,
             qos,
-            callback_group=self.io_callback_group,
+            callback_group=self.auxiliary_callback_group,
         )
 
         self.rest_srv = self.create_client(
@@ -509,6 +519,53 @@ class BxiExample(Node):
         msg.kp = frame.kp.tolist()
         msg.kd = frame.kd.tolist()
         self.act_pub.publish(msg)
+        self._communication_trace.record(
+            "command_tx",
+            stamp_ns=msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec,
+            ros_now_ns=self.get_clock().now().nanoseconds,
+        )
+
+    def communication_diagnostics(self):
+        """Watchdog-only ROS graph queries; never acquire control/input locks."""
+        def endpoint_info(endpoints):
+            return [{
+                "node": e.node_namespace.rstrip("/") + "/" + e.node_name,
+                "gid": bytes(e.endpoint_gid).hex(),
+                "reliability": e.qos_profile.reliability.name,
+                "durability": e.qos_profile.durability.name,
+                "history": e.qos_profile.history.name,
+                "depth": e.qos_profile.depth,
+            } for e in endpoints]
+
+        rx = {}
+        for subscription in (self.actuator_sub, self.imu_sub, self.joy_sub):
+            rx[subscription.topic_name] = endpoint_info(
+                self.get_publishers_info_by_topic(subscription.topic_name)
+            )
+        pressure = {}
+        for resource in ("cpu", "io", "memory"):
+            try:
+                pressure[resource] = Path(f"/proc/pressure/{resource}").read_text().strip()
+            except OSError:
+                pass
+        return {
+            "rmw": get_rmw_implementation_identifier(),
+            "domain": os.environ.get("ROS_DOMAIN_ID", "0"),
+            "localhost_only": os.environ.get("ROS_LOCALHOST_ONLY", "0"),
+            "use_sim_time": self.get_parameter("use_sim_time").value,
+            "ros_now_ns": self.get_clock().now().nanoseconds,
+            "command_topic": self.act_pub.topic_name,
+            "command_matched_subscriptions": self.act_pub.get_subscription_count(),
+            "command_discovered_subscriptions": endpoint_info(
+                self.get_subscriptions_info_by_topic(self.act_pub.topic_name)
+            ),
+            "input_discovered_publishers": rx,
+            "remote_input": self._remote_input.snapshot(time.monotonic()),
+            "controller_step": self.step,
+            "state": self.runtime.framework.current_state_name,
+            "load_average": os.getloadavg(),
+            "system_pressure": pressure,
+        }
 
     def publish_state_machine_info(self):
         info = self.runtime.snapshot(include_graph=True)
@@ -787,7 +844,12 @@ def main(args=None):
     rclpy.init(args=args)
     node = BxiExample(cpu_affinity_plan=_CPU_AFFINITY_PLAN)
 
-    executor = MultiThreadedExecutor(num_threads=3)
+    executor = CommunicationExecutor(
+        node._communication_trace, node.get_clock().now, num_threads=3
+    )
+    executor.trace_subscription(node.actuator_sub, "joint_rx")
+    executor.trace_subscription(node.imu_sub, "imu_rx")
+    executor.trace_subscription(node.joy_sub, "remote_rx")
     try:
         executor.add_node(node)
         node.runtime.attach_executor(executor)

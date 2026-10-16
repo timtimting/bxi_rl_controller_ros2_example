@@ -1,0 +1,355 @@
+diff --git a/src/hardware_elf3/include/hardware/RobotHwMessageHandler.h b/src/hardware_elf3/include/hardware/RobotHwMessageHandler.h
+--- a/src/hardware_elf3/include/hardware/RobotHwMessageHandler.h
++++ b/src/hardware_elf3/include/hardware/RobotHwMessageHandler.h
+@@ -20,6 +20,7 @@
+ #include <vector>
+
+ #include "hw_api.h"
++#include "hardware/communication_trace.hpp"
+
+ using namespace rclcpp;
+
+@@ -75,7 +76,9 @@
+     void imu_callback();
+     void imu_loop();
+
+-    void actuator_cmd_callback(const communication::msg::ActuatorCmds::SharedPtr msg);
++    void actuator_cmd_callback(const communication::msg::ActuatorCmds::SharedPtr msg,
++                               const rclcpp::MessageInfo &info);
++    void communication_watchdog();
+     void canfd_callback(const communication::msg::CANFDPacket::SharedPtr msg);
+     void process_canfd_io();
+     void handle_canfd_rx(const canfd_packet &packet);
+@@ -90,6 +93,8 @@
+     mHandle handle_hw_;
+
+     std::thread imu_loop_thread_;
++    std::thread communication_watchdog_thread_;
++    CommunicationTrace communication_trace_;
+
+     std::string name_prefix, model_param_name;
+
+@@ -126,7 +131,7 @@
+
+     volatile int is_read_=0;
+     volatile int error_ = 0;
+-    volatile int step_ = 0;
++    std::atomic<int> step_{0};
+
+     pthread_spinlock_t time_lock;
+     pthread_spinlock_t cmd_lock;
+diff --git a/src/hardware_elf3/src/hardware/RobotHwMessageHandler.cpp b/src/hardware_elf3/src/hardware/RobotHwMessageHandler.cpp
+--- a/src/hardware_elf3/src/hardware/RobotHwMessageHandler.cpp
++++ b/src/hardware_elf3/src/hardware/RobotHwMessageHandler.cpp
+@@ -4,6 +4,8 @@
+ #include <cstring>
+ #include <stdio.h>
+ #include <utility>
++#include <rmw/rmw.h>
++#include <unistd.h>
+
+ #include "hardware/parallel_joint.h"
+
+@@ -331,7 +333,7 @@
+         this->create_subscription<communication::msg::ActuatorCmds>(
+             name_prefix + "actuators_cmds", qos,
+             std::bind(&RobotHwMessageHandler::actuator_cmd_callback, this,
+-                      std::placeholders::_1));
++                      std::placeholders::_1, std::placeholders::_2));
+
+     canfd_subscription_ =
+         this->create_subscription<communication::msg::CANFDPacket>(
+@@ -349,6 +351,8 @@
+       RCLCPP_ERROR(this->get_logger(), "Failed to register user CANFD callback");
+     }
+
++    communication_watchdog_thread_ = std::thread(
++        &RobotHwMessageHandler::communication_watchdog, this);
+     RCLCPP_INFO(this->get_logger(), "Start RobotHwMessageHandler ...");
+   }
+
+@@ -356,6 +360,7 @@
+   {
+     set_usr_can_func(handle_hw_, nullptr, nullptr);
+     running_ = false;
++    if (communication_watchdog_thread_.joinable()) communication_watchdog_thread_.join();
+     if (imu_loop_thread_.joinable())
+     {
+       imu_loop_thread_.join();
+@@ -494,6 +499,9 @@
+
+   void RobotHwMessageHandler::joint_callback()
+   {
++    auto &trace = communication_trace_;
++    CommunicationTrace::Lane::Guard trace_guard(trace.joint);
++    trace.joint.enter("motor_feedback_wait");
+     static double q_pos_filt[JOINT_NUM] = {0};
+     static double q_vel_filt[JOINT_NUM] = {0};
+     static double q_tor_filt[JOINT_NUM] = {0};
+@@ -515,8 +523,11 @@
+     // static uint64_t loop_count_all = 0;
+
+     int64_t delay = measure_motor_delay(handle_hw_, 1000);
++    trace.motor_wait_result = delay;
++    trace.joint.enter("state_read_and_kinematics");
+     if (delay <= 0)
+     {
++      trace.motor_timeouts.fetch_add(1, std::memory_order_relaxed);
+       uint64_t recv_flag = static_cast<uint64_t>(-delay);
+       // printf("*** motor_timeout: 0x%lX ***\n", recv_flag);
+       set_motor_loss(handle_hw_, recv_flag);
+@@ -621,8 +632,11 @@
+         actuatorStates.motor_temperature.push_back(motor_temp[i]);
+       }
+     }
++    trace.joint.enter("feedback_publish");
+     joint_state_publisher_->publish(jointState);
+     actuator_states_publisher_->publish(actuatorStates);
++    trace.joint_tx.record(rclcpp::Time(actuatorStates.header.stamp).nanoseconds());
++    trace.joint.enter("command_lock_and_kinematics");
+
+     pthread_spin_lock(&cmd_lock);
+     for (size_t i = 0; i < JOINT_NUM; i++)
+@@ -697,24 +711,35 @@
+                     q_kp_cmd[i], q_kd_cmd[i], q_tor_cmd[i]);
+     }
+
++    trace.joint.enter("motor_cmd_trans");
+     if (motor_cmd_trans(handle_hw_, 1) < 0)
+       raise(SIGINT);
++    trace.motor_tx.record(trace.command_applied.stamp.load());
+
+     // Motor traffic is enqueued first. User CANFD traffic is serviced with a
+     // fixed budget afterwards so can5/can6 cannot monopolize the control loop.
++    trace.joint.enter("user_canfd_io");
+     process_canfd_io();
+   }
+
+   void RobotHwMessageHandler::actuator_cmd_callback(
+-      const communication::msg::ActuatorCmds::SharedPtr msg)
+-  {
+-
++      const communication::msg::ActuatorCmds::SharedPtr msg,
++      const rclcpp::MessageInfo &info)
++  {
++    auto &trace = communication_trace_;
++    CommunicationTrace::Lane::Guard trace_guard(trace.command);
++    trace.command.enter("command_lock_and_copy");
++    const auto stamp_ns = rclcpp::Time(msg->header.stamp).nanoseconds();
++    const auto &metadata = info.get_rmw_message_info();
++    trace.received(stamp_ns, metadata.source_timestamp, metadata.received_timestamp);
+     pthread_spin_lock(&cmd_lock);
+     for (size_t i = 0; i < msg->actuators_name.size(); i++)
+     {
+         int index = find_joint(msg->actuators_name[i]);
+         if (-1 == index)
+         {
++          trace.rejected_commands.fetch_add(1, std::memory_order_relaxed);
++          trace.incident = true;
+           std::cout << "actuators: " << msg->actuators_name[i] << ", not found!" << std::endl;
+           pthread_spin_unlock(&cmd_lock);
+           return;
+@@ -730,9 +755,11 @@
+
+     double time = msg->header.stamp.sec + (double)msg->header.stamp.nanosec / 1e9;
+
++    trace.command.enter("command_time_lock");
+     pthread_spin_lock(&time_lock);
+     actuator_cmds_ptr_->time = time;// this->now().seconds();
+     pthread_spin_unlock(&time_lock);
++    trace.command_applied.record(stamp_ns);
+
+   }
+
+@@ -903,6 +930,62 @@
+     return true;
+   }
+
++  void RobotHwMessageHandler::communication_watchdog()
++  {
++    char host[256] = {};
++    gethostname(host, sizeof(host) - 1);
++    const char *domain = std::getenv("ROS_DOMAIN_ID");
++    RCLCPP_INFO(this->get_logger(),
++      "communication_trace {\"event\":\"started\",\"side\":\"hardware\",\"pid\":%d,"
++      "\"host\":\"%s\",\"rmw\":\"%s\",\"domain\":\"%s\",\"threshold_ms\":200,"
++      "\"command_qos\":\"best_effort/volatile/keep_last/1\"}",
++      getpid(), host, rmw_get_implementation_identifier(), domain ? domain : "0");
++    auto &trace = communication_trace_;
++    bool was_stalled = false, pending = false;
++    int64_t previous = CommunicationTrace::mono_ns();
++    int64_t previous_wall = CommunicationTrace::wall_ns();
++    int64_t last_report = 0, max_watchdog_gap = 0, clock_jump = 0;
++    int64_t reported_command_gap = 0, reported_joint_gap = 0;
++    while (running_)
++    {
++      std::this_thread::sleep_for(50ms);
++      if (!running_) break;
++      const auto now = CommunicationTrace::mono_ns();
++      const auto wall = CommunicationTrace::wall_ns();
++      const auto elapsed = now - previous;
++      const auto delta = wall - previous_wall - elapsed;
++      previous = now;
++      previous_wall = wall;
++      if (elapsed > 200000000LL) { max_watchdog_gap = std::max(max_watchdog_gap, elapsed); pending = true; }
++      if (std::abs(delta) > 100000000LL) { clock_jump = delta; pending = true; }
++      pending = trace.incident.exchange(false) || pending;
++      const auto command_gap = trace.command_rx.max_gap.load();
++      const auto joint_gap = trace.joint_tx.max_gap.load();
++      if ((command_gap > 200000000LL && command_gap > reported_command_gap) ||
++          (joint_gap > 200000000LL && joint_gap > reported_joint_gap)) pending = true;
++      const auto joint_started = trace.joint.since.load();
++      const bool joint_busy = joint_started && now - joint_started > 200000000LL &&
++          std::strcmp(trace.joint.phase.load(), "waiting_executor") != 0;
++      const bool stalled = joint_busy || trace.command_rx.age_ms(now) > 200 ||
++          trace.joint_tx.age_ms(now) > 200 || trace.motor_tx.age_ms(now) > 200;
++      if ((!stalled && !was_stalled && !pending) || now - last_report < 1000000000LL) continue;
++      const auto text = trace.json(now, this->now().nanoseconds(), step_.load());
++      RCLCPP_WARN(this->get_logger(),
++        "communication_trace {\"event\":\"%s\",\"side\":\"hardware\",\"pid\":%d,\"host\":\"%s\","
++        "\"command_matched_publishers\":%zu,\"feedback_matched_subscriptions\":%zu,"
++        "\"watchdog_gap_ms\":%.3f,\"wall_clock_jump_ms\":%.3f,%s}",
++        stalled ? "stall" : (was_stalled ? "recovered" : "incident"), getpid(), host,
++        actuator_cmd_subscription_->get_publisher_count(), actuator_states_publisher_->get_subscription_count(),
++        max_watchdog_gap / 1e6, clock_jump / 1e6, text.c_str());
++      last_report = now;
++      was_stalled = stalled;
++      pending = false;
++      max_watchdog_gap = clock_jump = 0;
++      reported_command_gap = command_gap;
++      reported_joint_gap = joint_gap;
++    }
++  }
++
+   void RobotHwMessageHandler::drop_old_message()
+   {
+     static double last_time = 0;
+@@ -932,6 +1015,8 @@
+         last_time = msg_time;
+         step_ = 0;
+
++        communication_trace_.watchdog_drops.fetch_add(1, std::memory_order_relaxed);
++        communication_trace_.incident = true;
+         std::cout << "drop_old_message!" << std::endl;
+       }
+       else
+diff --git a/src/hardware_elf3/include/hardware/communication_trace.hpp b/src/hardware_elf3/include/hardware/communication_trace.hpp
+new file mode 100644
+--- /dev/null
++++ b/src/hardware_elf3/include/hardware/communication_trace.hpp
+@@ -0,0 +1,115 @@
++#pragma once
++
++#include <atomic>
++#include <chrono>
++#include <cstdint>
++#include <sstream>
++
++// Observation only. No ROS/control locks, allocation or logging in hot paths.
++namespace robothw {
++struct CommunicationTrace {
++  static int64_t mono_ns() {
++    return std::chrono::duration_cast<std::chrono::nanoseconds>(
++        std::chrono::steady_clock::now().time_since_epoch()).count();
++  }
++  static int64_t wall_ns() {
++    return std::chrono::duration_cast<std::chrono::nanoseconds>(
++        std::chrono::system_clock::now().time_since_epoch()).count();
++  }
++  static void maximum(std::atomic<int64_t> &target, int64_t value) {
++    auto old = target.load(std::memory_order_relaxed);
++    while (old < value && !target.compare_exchange_weak(old, value, std::memory_order_relaxed)) {}
++  }
++  struct Stream {
++    std::atomic<int64_t> last{0}, stamp{0}, max_gap{0};
++    std::atomic<uint64_t> count{0};
++    void record(int64_t source_stamp = 0) {
++      const auto now = mono_ns();
++      const auto previous = last.exchange(now, std::memory_order_relaxed);
++      stamp.store(source_stamp, std::memory_order_relaxed);
++      count.fetch_add(1, std::memory_order_relaxed);
++      if (previous) maximum(max_gap, now - previous);
++    }
++    double age_ms(int64_t now) const {
++      const auto value = last.load(std::memory_order_relaxed);
++      return value ? (now - value) / 1e6 : -1.0;
++    }
++    void json(std::ostream &out, int64_t now) const {
++      out << "{\"count\":" << count.load() << ",\"age_ms\":" << age_ms(now)
++          << ",\"stamp_ns\":" << stamp.load() << ",\"max_gap_ms\":" << max_gap.load() / 1e6 << "}";
++    }
++  };
++  struct Lane {
++    std::atomic<const char *> phase{"waiting_executor"};
++    std::atomic<int64_t> since{0};
++    void enter(const char *value) {
++      since.store(mono_ns(), std::memory_order_relaxed);
++      phase.store(value, std::memory_order_release);
++    }
++    void json(std::ostream &out, int64_t now) const {
++      const auto started = since.load();
++      out << "{\"stage\":\"" << phase.load(std::memory_order_acquire)
++          << "\",\"age_ms\":" << (started ? (now - started) / 1e6 : -1.0) << "}";
++    }
++    struct Guard {
++      Lane &lane;
++      explicit Guard(Lane &value) : lane(value) {}
++      ~Guard() { lane.enter("waiting_executor"); }
++    };
++  };
++
++  Stream command_rx, command_applied, joint_tx, motor_tx;
++  Lane joint, command;
++  std::atomic<int64_t> dds_source{0}, dds_received{0}, callback_wall{0};
++  std::atomic<int64_t> max_dds_wait{0}, max_transport{0};
++  std::atomic<int64_t> motor_wait_result{0};
++  std::atomic<uint64_t> motor_timeouts{0}, rejected_commands{0}, watchdog_drops{0};
++  std::atomic<bool> incident{false};
++
++  void received(int64_t stamp_ns, int64_t source_ns, int64_t received_ns) {
++    const auto now = wall_ns();
++    command_rx.record(stamp_ns);
++    dds_source.store(source_ns);
++    dds_received.store(received_ns);
++    callback_wall.store(now);
++    if (received_ns > 0) {
++      maximum(max_dds_wait, now - received_ns);
++      if (now - received_ns > 200000000LL || now - received_ns < -200000000LL) incident = true;
++      if (source_ns > 0) {
++        maximum(max_transport, received_ns - source_ns);
++        if (received_ns - source_ns > 200000000LL || received_ns - source_ns < -200000000LL) incident = true;
++      }
++    }
++  }
++
++  std::string json(int64_t now, int64_t ros_now, int step) const {
++    std::ostringstream out;
++    out << "\"mono_ns\":" << now << ",\"wall_ns\":" << wall_ns()
++        << ",\"ros_now_ns\":" << ros_now << ",\"step\":" << step
++        << ",\"command_rx\":"; command_rx.json(out, now);
++    out << ",\"command_applied\":"; command_applied.json(out, now);
++    out << ",\"joint_tx\":"; joint_tx.json(out, now);
++    out << ",\"motor_tx\":"; motor_tx.json(out, now);
++    out << ",\"joint_lane\":"; joint.json(out, now);
++    out << ",\"command_lane\":"; command.json(out, now);
++    out << ",\"command_source_age_ms\":";
++    if (command_rx.stamp.load()) out << (ros_now - command_rx.stamp.load()) / 1e6;
++    else out << "null";
++    out << ",\"dds_source_ns\":" << dds_source.load()
++        << ",\"dds_received_ns\":" << dds_received.load()
++        << ",\"dds_to_callback_ms\":";
++    if (dds_received.load() > 0) out << (callback_wall.load() - dds_received.load()) / 1e6;
++    else out << "null";
++    out << ",\"source_to_dds_ms\":";
++    if (dds_received.load() > 0 && dds_source.load() > 0) out << (dds_received.load() - dds_source.load()) / 1e6;
++    else out << "null";
++    out << ",\"max_dds_to_callback_ms\":" << max_dds_wait.load() / 1e6
++        << ",\"max_source_to_dds_ms\":" << max_transport.load() / 1e6
++        << ",\"motor_wait_result\":" << motor_wait_result.load()
++        << ",\"motor_timeouts\":" << motor_timeouts.load()
++        << ",\"rejected_commands\":" << rejected_commands.load()
++        << ",\"watchdog_drops\":" << watchdog_drops.load();
++    return out.str();
++  }
++};
++}  // namespace robothw
