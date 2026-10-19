@@ -2,6 +2,7 @@
 
 from collections import deque
 import importlib
+import json
 from queue import SimpleQueue
 from threading import Event, Lock, Thread
 from types import SimpleNamespace
@@ -13,6 +14,7 @@ import pytest
 from bxi_example_py_elf3.remote_input import RemoteInputMonitor
 from bxi_example_py_elf3.remote_freshness import RemotePathMonitor
 from bxi_example_py_elf3.imu_freshness import ImuFallObserver
+from bxi_example_py_elf3.imu_diagnostics import ImuFrameRecorder
 
 
 @pytest.mark.parametrize("value", [0, -1, float("inf"), float("nan")])
@@ -110,12 +112,16 @@ def controller(demo):
         quat_xyzw=np.zeros(4), quat_wxyz=np.zeros(4), omega=np.zeros(3),
         linear_acceleration=np.zeros(3), _imu_protection_latched=False,
         _imu_fall_observer=ImuFallObserver(), _imu_received=False,
+        _imu_frame_recorder=ImuFrameRecorder(),
         _imu_first_received_logged=False, _imu_last_received_at=None,
         _imu_invalid_frame_count=0, _next_imu_invalid_warning=0.0,
         get_logger=Mock(return_value=Mock()),
         get_clock=lambda: SimpleNamespace(
             now=lambda: SimpleNamespace(nanoseconds=1_000_000_000)
         ),
+    )
+    node._log_imu_followups = lambda captures: demo.BxiExample._log_imu_followups(
+        node, captures
     )
     return node
 
@@ -399,9 +405,114 @@ def test_fall_confirmation_flows_from_imu_messages_to_control_snapshot(demo):
         assert RobotControlFramework.is_orientation_unsafe(
             context, observation.quat_xyzw
         ) is (frame == 5)
-    node.get_logger().warning.assert_called_once_with(
-        "unsafe orientation confirmed by 5 consecutive IMU frames"
+    warning = node.get_logger().warning
+    assert warning.call_count == 1
+    prefix, evidence = warning.call_args.args[0].split("evidence=", 1)
+    assert "unsafe orientation confirmed by 5 consecutive IMU frames" in prefix
+    evidence = json.loads(evidence)
+    assert evidence["trigger"] == "fall_confirmed"
+    assert evidence["phase"] == "before"
+    assert [frame["rx_seq"] for frame in evidence["frames"]] == [1, 2, 3, 4, 5]
+    assert all(frame["roll_pitch_deg"][0] == 65.0 for frame in evidence["frames"])
+
+    for frame in range(6, 9):
+        imu.header.stamp.nanosec = frame
+        demo.BxiExample.imu_callback(node, imu)
+    assert warning.call_count == 2
+    followup = json.loads(warning.call_args.args[0].split("IMU protection follow-up: ")[1])
+    assert followup["incident_id"] == evidence["incident_id"]
+    assert [frame["rx_seq"] for frame in followup["frames"]] == [6, 7, 8]
+
+
+def test_imu_timeout_log_contains_last_valid_and_invalid_frames(demo):
+    node = controller(demo)
+    node.imu_required = False
+    node.topic_prefix = "simulation/"
+    imu = SimpleNamespace(
+        header=SimpleNamespace(stamp=SimpleNamespace(sec=1, nanosec=0)),
+        orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0),
+        angular_velocity=SimpleNamespace(x=0.0, y=0.0, z=0.0),
+        linear_acceleration=SimpleNamespace(x=0.0, y=0.0, z=9.81),
     )
+    with patch.object(demo.time, "monotonic", return_value=1.0):
+        demo.BxiExample.imu_callback(node, imu)
+    imu.orientation.x = float("nan")
+    imu.header.stamp.nanosec = 1
+    with patch.object(demo.time, "monotonic", return_value=1.05):
+        demo.BxiExample.imu_callback(node, imu)
+
+    node.imu_required = True
+    node.imu_runtime_timeout_sec = 0.1
+    node.runtime.framework.current_state_name = "com.bxi.basic_actions/normal"
+    order = []
+    node.runtime.framework.request_state = Mock(
+        side_effect=lambda *_args, **_kwargs: order.append("request") or True
+    )
+    node.get_logger().error.side_effect = lambda _message: order.append("log")
+    with patch.object(demo.time, "monotonic", return_value=1.2):
+        demo.BxiExample._check_imu_runtime_safety(node)
+    assert node._imu_protection_latched
+    assert order == ["request", "log"]
+    node.runtime.framework.request_state.assert_called_once_with(
+        "com.bxi.basic_actions/imu_protection",
+        trigger="imu_timeout", transition=None, delay=0.0, force=True,
+    )
+    error = node.get_logger().error
+    assert error.call_count == 1
+    payload = json.loads(error.call_args.args[0].split("evidence=", 1)[1])
+    assert payload["trigger"] == "runtime_timeout"
+    assert payload["details"]["last_valid_age_ms"] == pytest.approx(200)
+    assert payload["details"]["last_any_frame_age_ms"] == pytest.approx(150)
+    assert payload["details"]["from_state"] == "com.bxi.basic_actions/normal"
+    assert payload["details"]["request_accepted"] is True
+    assert [frame["payload_valid"] for frame in payload["frames"]] == [True, False]
+    assert payload["frames"][-1]["reason"] == "nonfinite_quaternion"
+    assert payload["frames"][-1]["quat_xyzw"][0] == "nan"
+
+
+def test_imu_startup_timeout_log_reports_no_current_frame(demo):
+    node = controller(demo)
+    node.imu_required = True
+    node.topic_prefix = "hardware/"
+    node.imu_startup_timeout_sec = 1.0
+    node._imu_startup_started_at = None
+    node._imu_startup_timeout_logged = False
+    node._next_imu_startup_warning = 0.0
+    assert not demo.BxiExample.startup_step(node, 0.0)
+    assert not demo.BxiExample.startup_step(node, 1.1)
+    error = node.get_logger().error
+    assert error.call_count == 1
+    payload = json.loads(error.call_args.args[0].split("evidence=", 1)[1])
+    assert payload["trigger"] == "startup_timeout"
+    assert payload["frames"] == []
+    assert payload["details"]["last_any_frame_age_ms"] is None
+    assert not demo.BxiExample.startup_step(node, 1.2)
+    assert error.call_count == 1
+
+
+def test_imu_stamp_warning_does_not_shift_recorded_receive_time(demo):
+    node = controller(demo)
+    node.imu_required = True
+    node.topic_prefix = "hardware/"
+    node._imu_stamp_observer = Mock()
+    node._imu_stamp_observer.observe.return_value = ("stale", 200.0)
+    node._imu_stamp_warning_count = 0
+    node._next_imu_stamp_warning = 0.0
+    imu = SimpleNamespace(
+        header=SimpleNamespace(stamp=SimpleNamespace(sec=1, nanosec=0)),
+        orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0),
+        angular_velocity=SimpleNamespace(x=0.0, y=0.0, z=0.0),
+        linear_acceleration=SimpleNamespace(x=0.0, y=0.0, z=9.81),
+    )
+    with patch.object(demo.time, "monotonic", side_effect=(1.0, 1.25)):
+        demo.BxiExample.imu_callback(node, imu)
+    assert node._imu_last_received_at == 1.0
+    evidence = json.loads(demo.format_imu_evidence(
+        node._imu_frame_recorder.trigger("runtime_timeout", at=1.3)
+    ))
+    assert evidence["frames"][0]["relative_ms"] == -300.0
+    assert evidence["frames"][0]["stamp_status"] == "stale"
+    assert evidence["frames"][0]["transport_age_ms"] == 200.0
 
 
 def test_repeated_full_state_has_no_duplicate_button_event_and_recovers_lost_stop(demo):
