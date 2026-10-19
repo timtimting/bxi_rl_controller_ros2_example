@@ -266,6 +266,9 @@ void InputDeviceManager::stop_running(const std::string &reason, bool cooldown)
         }
         Candidate &candidate = *candidates_[running_index_];
         driver = candidate.driver.get();
+        last_freshness_ = driver->freshness();
+        last_freshness_.stop_status = freshness_status(last_freshness_, freshness_now_ns());
+        last_freshness_.open = false; last_freshness_.active = false;
         sources = candidate.config.raw_sources;
         name = candidate.config.name;
         if (cooldown) {
@@ -302,6 +305,8 @@ bool InputDeviceManager::tick()
 
     bool stop_for_loss = false;
     bool stop_for_timeout = false;
+    bool stop_for_freshness = false;
+    std::string freshness_failure;
     bool promote = false;
     int desired = -1;
     bool became_ready = false;
@@ -334,7 +339,15 @@ bool InputDeviceManager::tick()
                 }
             }
 
-            if (running_ready_ && !stop_for_loss) {
+            if (running_ready_) {
+                const auto freshness = running.driver->freshness();
+                if (freshness_requires_clear(freshness, freshness_now_ns())) {
+                    stop_for_freshness = true;
+                    freshness_failure = freshness_status(freshness, freshness_now_ns());
+                }
+            }
+
+            if (running_ready_ && !stop_for_loss && !stop_for_freshness) {
                 const int best = best_ready_candidate_locked(now);
                 if (best >= 0 && candidates_[best]->config.priority > running.config.priority) {
                     desired = best;
@@ -359,10 +372,11 @@ bool InputDeviceManager::tick()
         log("input candidate ready; accepting commands: " + ready_name);
     }
 
-    if (stop_for_loss || stop_for_timeout || promote) {
+    if (stop_for_loss || stop_for_timeout || stop_for_freshness || promote) {
         stop_running(
             promote ? "higher-priority candidate available" :
-            (stop_for_loss ? "availability lost" : "ready timeout"),
+            (stop_for_freshness ? "input freshness " + freshness_failure :
+             stop_for_loss ? "availability lost" : "ready timeout"),
             !promote);
         int fallback = desired;
         if (fallback < 0) {
@@ -433,6 +447,37 @@ void InputDeviceManager::handle_driver_outputs(
     if (accept && output_handler_) {
         output_handler_(outputs);
     }
+}
+
+InputFreshness InputDeviceManager::input_freshness()
+{
+    const std::lock_guard<std::mutex> guard(state_lock_);
+    int index = running_index_;
+    if (index < 0) {
+        // Prefer a candidate already receiving valid data during handover.
+        for (std::size_t i = 0; i < candidates_.size(); ++i) {
+            if (!candidates_[i]->available) continue;
+            if (index < 0 || candidates_[i]->config.priority > candidates_[index]->config.priority)
+                index = static_cast<int>(i);
+        }
+        // Before the first valid frame, keep observing the previous source's
+        // probe counters so USB garbage and its stop reason remain visible.
+        if (index < 0) {
+            for (std::size_t i = 0; i < candidates_.size(); ++i) {
+                if (candidates_[i]->config.name == last_freshness_.source) {
+                    index = static_cast<int>(i);
+                    break;
+                }
+                if (index < 0 || candidates_[i]->config.priority > candidates_[index]->config.priority)
+                    index = static_cast<int>(i);
+            }
+        }
+    }
+    if (index < 0) return last_freshness_;
+    auto snapshot = candidates_[index]->driver->freshness();
+    snapshot.active = running_index_ >= 0 && running_ready_;
+    if (!snapshot.open && snapshot.source == last_freshness_.source) snapshot.stop_status = last_freshness_.stop_status;
+    return snapshot;
 }
 
 }  // namespace remote_controller

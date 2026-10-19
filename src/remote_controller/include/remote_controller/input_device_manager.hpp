@@ -30,6 +30,7 @@ public:
     InputDeviceManager &operator=(const InputDeviceManager &) = delete;
 
     void stop();
+    InputFreshness input_freshness();
 
     // Returns true when the caller must publish one all-zero command before
     // notify_safe_output_published() may start the next candidate.
@@ -48,6 +49,7 @@ private:
     InputSelectionConfig selection_;
     std::vector<std::unique_ptr<Candidate>> candidates_;
     std::mutex state_lock_;
+    InputFreshness last_freshness_;
     int running_index_ = -1;
     bool running_ready_ = false;
     bool accepting_outputs_ = false;

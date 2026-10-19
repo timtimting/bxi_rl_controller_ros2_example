@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "rclcpp/rclcpp.hpp"
+#include "std_msgs/msg/string.hpp"
 #include "remote_controller/config.hpp"
 #include "remote_controller/input_device_manager.hpp"
 #include "remote_controller/input_mapper.hpp"
@@ -42,6 +43,9 @@ public:
             },
             driver_debug_enabled,
             driver_filter));
+        freshness_pub_ = this->create_publisher<std_msgs::msg::String>("remote_controller/freshness", 10);
+        freshness_timer_ = this->create_wall_timer(100ms, std::bind(&COMPublisher::freshness_callback, this));
+        RCLCPP_INFO(this->get_logger(), "remote freshness: USB reads / valid frames / publish counters on remote_controller/freshness (10Hz); diagnostics only");
         if (driver_debug_enabled) {
             RCLCPP_INFO(this->get_logger(), "input driver debug is enabled");
         }
@@ -55,6 +59,60 @@ public:
     }
 
 private:
+    rclcpp::Publisher<std_msgs::msg::String>::SharedPtr freshness_pub_;
+    rclcpp::TimerBase::SharedPtr freshness_timer_;
+    std::uint64_t published_count_ = 0;
+    std::int64_t last_publish_ns_ = 0;
+    const std::int64_t freshness_instance_ = remote_controller::freshness_now_ns();
+    std::int64_t next_freshness_log_ns_ = 0;
+    std::string last_freshness_status_, last_rate_source_;
+    std::int64_t last_rate_ns_ = 0;
+    std::uint64_t last_samples_ = 0, last_reads_ = 0;
+    std::int64_t last_timer_ns_ = 0, next_timer_gap_log_ns_ = 0;
+    std::uint64_t timer_gaps_ = 0;
+    bool had_subscriber_ = false, subscriber_lost_ = false;
+
+    void freshness_callback()
+    {
+        const auto s = input_manager_->input_freshness();
+        const auto now = remote_controller::freshness_now_ns();
+        const auto status = remote_controller::freshness_status(s, now);
+        double sample_hz = -1, read_hz = -1;
+        const std::string rate_source = s.source + ":" + s.io_kind;
+        if (last_rate_ns_ && rate_source == last_rate_source_ && now > last_rate_ns_ && s.samples >= last_samples_ && s.reads >= last_reads_) {
+            const double seconds = (now - last_rate_ns_) / 1e9;
+            sample_hz = (s.samples - last_samples_) / seconds;
+            read_hz = (s.reads - last_reads_) / seconds;
+        }
+        last_rate_source_ = rate_source; last_rate_ns_ = now; last_samples_ = s.samples; last_reads_ = s.reads;
+        std_msgs::msg::String message;
+        const auto subscribers = com_pub_->get_subscription_count();
+        message.data = remote_controller::freshness_json(s, now, this->now().nanoseconds(),
+            published_count_, last_publish_ns_, mapper_.config().publish_on_change,
+            freshness_instance_, sample_hz, read_hz, timer_gaps_, subscribers);
+        freshness_pub_->publish(message);
+        if (subscribers > 0) {
+            had_subscriber_ = true;
+            if (subscriber_lost_) RCLCPP_INFO(this->get_logger(), "motion_commands ROS subscriber restored: %zu", subscribers);
+            subscriber_lost_ = false;
+        } else if (had_subscriber_ && !subscriber_lost_) {
+            subscriber_lost_ = true;
+            RCLCPP_WARN(this->get_logger(), "motion_commands has no matched ROS subscribers; input may be fresh but commands cannot be delivered");
+        }
+        const std::string key = s.source + ":" + s.io_kind + ":" + status;
+        const bool healthy = status == "fresh" || status == "event_source_unverified" || status == "no_source";
+        if (key != last_freshness_status_ || (!healthy && now >= next_freshness_log_ns_)) {
+            const std::string summary = "remote freshness source=" + s.source + " device=" + s.device +
+                " status=" + status + " io_kind=" + s.io_kind + " usb_age_ms=" + std::to_string(remote_controller::freshness_age_ms(s.io_ns, now)) +
+                " valid_age_ms=" + std::to_string(remote_controller::freshness_age_ms(s.sample_ns, now)) +
+                " last_stop=" + s.stop_status + " sample_hz=" + std::to_string(sample_hz) + " seq=" + std::to_string(s.samples) + " crc_errors=" + std::to_string(s.crc_errors);
+            if (healthy) RCLCPP_INFO(this->get_logger(), "%s", summary.c_str());
+            else RCLCPP_WARN(this->get_logger(), "%s", summary.c_str());
+            last_freshness_status_ = key;
+            next_freshness_log_ns_ = now + 5000000000LL;
+        }
+    }
+
     mutable std::mutex lock_;
     InputMapper mapper_;
     std::unique_ptr<remote_controller::InputDeviceManager> input_manager_;
@@ -78,6 +136,16 @@ private:
 
     void timer_callback()
     {
+        const auto now = remote_controller::freshness_now_ns();
+        if (last_timer_ns_ && now - last_timer_ns_ > 100000000LL) {
+            ++timer_gaps_;
+            if (now >= next_timer_gap_log_ns_) {
+                RCLCPP_WARN(this->get_logger(), "remote publish loop gap: %.1f ms (gaps=%llu); check process scheduling/system load",
+                    (now - last_timer_ns_) / 1e6, static_cast<unsigned long long>(timer_gaps_));
+                next_timer_gap_log_ns_ = now + 5000000000LL;
+            }
+        }
+        last_timer_ns_ = now;
         const bool must_publish_safe_command = input_manager_ && input_manager_->tick();
         auto message = communication::msg::MotionCommands();
         std::vector<std::string> outputs;
@@ -102,6 +170,8 @@ private:
         message.header.stamp = this->now();
         message.header.frame_id = "remote_controller";
         com_pub_->publish(message);
+        ++published_count_;
+        last_publish_ns_ = remote_controller::freshness_now_ns();
         if (must_publish_safe_command && input_manager_) {
             input_manager_->notify_safe_output_published();
         }

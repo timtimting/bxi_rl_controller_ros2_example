@@ -39,6 +39,7 @@ from bxi_example_py_elf3.framework.joints import (
 )
 from bxi_example_py_elf3.framework.mod_api import MotorFrame
 from bxi_example_py_elf3.imu_freshness import ImuStampObserver
+from bxi_example_py_elf3.remote_freshness import RemotePathMonitor
 from bxi_example_py_elf3.remote_input import RemoteInputMonitor
 from bxi_example_py_elf3.framework.platform import (
     NamedJointStateSource,
@@ -110,6 +111,8 @@ class BxiExample(Node):
 
         self._shutting_down = Event()
         self._communication_trace = CommunicationTrace()
+        self._remote_path = RemotePathMonitor(time.monotonic())
+        self._remote_path_blocked = False
 
         # 加载运行参数
         self.load_files()
@@ -261,6 +264,7 @@ class BxiExample(Node):
         self.auxiliary_callback_group = MutuallyExclusiveCallbackGroup()
         self.remote_callback_group = MutuallyExclusiveCallbackGroup()
         self.status_callback_group = MutuallyExclusiveCallbackGroup()
+        self.remote_diagnostic_callback_group = MutuallyExclusiveCallbackGroup()
         qos = QoSProfile(
             depth=1,
             durability=qos_profile_sensor_data.durability,
@@ -311,6 +315,13 @@ class BxiExample(Node):
             self.joy_callback,
             qos,
             callback_group=self.remote_callback_group,
+        )
+        self.remote_freshness_sub = self.create_subscription(
+            String, "remote_controller/freshness", self.remote_freshness_callback, 10,
+            callback_group=self.remote_diagnostic_callback_group,
+        )
+        self.remote_freshness_timer = self.create_timer(
+            0.1, self.remote_freshness_check, callback_group=self.remote_diagnostic_callback_group,
         )
         self.motor_override_sub = self.create_subscription(
             bxiMsg.ActuatorCmds,
@@ -397,10 +408,15 @@ class BxiExample(Node):
         """Copy the latest ROS inputs into one coherent framework observation."""
         self._check_imu_runtime_safety()
         with self.lock_in:
-            remote_expired = self._remote_input.expire(time.monotonic())
-            if remote_expired:
+            now = time.monotonic()
+            remote_expired = self._remote_input.expire(now)
+            command_age = self._remote_input.snapshot(now)["receive_age_ms"]
+            upstream_unsafe = self._remote_path.input_unsafe(now, command_age)
+            if remote_expired or upstream_unsafe:
                 self.raw_cmd_vel.fill(0.0)
                 self.pending_remote_events.clear()
+            if upstream_unsafe:
+                self._remote_path_blocked = True
             latest_joints = self._joint_source.view
             if self._joint_snapshot is None:
                 self._joint_snapshot = JointStateBuffer(
@@ -528,9 +544,13 @@ class BxiExample(Node):
 
     def communication_summary(self):
         """Small watchdog snapshot without ROS graph queries or control locks."""
+        now = time.monotonic()
         return {
             "state": self.runtime.framework.current_state_name,
-            "remote_input_fresh": self._remote_input.is_fresh(time.monotonic()),
+            "remote_input_fresh": self._remote_input.is_fresh(now),
+            "remote_path_status": self._remote_path.status(
+                now, self._remote_input.snapshot(now)["receive_age_ms"]
+            ),
         }
 
     def communication_diagnostics(self):
@@ -546,7 +566,10 @@ class BxiExample(Node):
             } for e in endpoints]
 
         rx = {}
-        for subscription in (self.actuator_sub, self.imu_sub, self.joy_sub):
+        for subscription in (
+            self.actuator_sub, self.imu_sub, self.joy_sub,
+            self.remote_freshness_sub,
+        ):
             rx[subscription.topic_name] = endpoint_info(
                 self.get_publishers_info_by_topic(subscription.topic_name)
             )
@@ -556,6 +579,26 @@ class BxiExample(Node):
                 pressure[resource] = Path(f"/proc/pressure/{resource}").read_text().strip()
             except OSError:
                 pass
+        process = {}
+        try:
+            for line in Path("/proc/self/status").read_text().splitlines():
+                key, _, value = line.partition(":")
+                if key in {"VmRSS", "VmHWM", "Threads", "voluntary_ctxt_switches",
+                           "nonvoluntary_ctxt_switches"}:
+                    process[key] = value.strip()
+            process["open_fds"] = len(tuple(Path("/proc/self/fd").iterdir()))
+        except OSError:
+            pass
+        log_filesystem = {}
+        try:
+            stat = os.statvfs(os.environ.get("BXI_LOG_ROOT", "/var/log/bxi_log"))
+            log_filesystem = {
+                "free_bytes": stat.f_bavail * stat.f_frsize,
+                "free_inodes": stat.f_favail,
+            }
+        except OSError:
+            pass
+        now = time.monotonic()
         return {
             "rmw": get_rmw_implementation_identifier(),
             "domain": os.environ.get("ROS_DOMAIN_ID", "0"),
@@ -569,10 +612,19 @@ class BxiExample(Node):
             ),
             "input_discovered_publishers": rx,
             "remote_input": self._remote_input.snapshot(time.monotonic()),
+            "remote_path": {
+                "status": self._remote_path.status(
+                    now, self._remote_input.snapshot(now)["receive_age_ms"]
+                ),
+                "sample": None if self._remote_path.sample is None
+                else self._remote_path.sample.copy(),
+            },
             "controller_step": self.step,
             "state": self.runtime.framework.current_state_name,
             "load_average": os.getloadavg(),
             "system_pressure": pressure,
+            "process": process,
+            "log_filesystem": log_filesystem,
         }
 
     def publish_state_machine_info(self):
@@ -673,27 +725,56 @@ class BxiExample(Node):
                 f"{first_joint_count} joints"
             )
 
+    def remote_freshness_callback(self, msg):
+        now = time.monotonic()
+        with self.lock_in:
+            self._remote_path.observe(msg.data, now, self.get_clock().now().nanoseconds)
+            age = self._remote_input.snapshot(now)["receive_age_ms"]
+            if self._remote_path.input_unsafe(now, age):
+                self._remote_path_blocked = True
+                self.raw_cmd_vel.fill(0.0)
+                self.pending_remote_events.clear()
+
+    def remote_freshness_check(self):
+        now = time.monotonic()
+        with self.lock_in:
+            age = self._remote_input.snapshot(now)["receive_age_ms"]
+            report = self._remote_path.report(now, age)
+        if report:
+            severity, text = report
+            getattr(self.get_logger(), severity)(text)
+
     def joy_callback(self, msg):
         received_at = time.monotonic()
         velocity = (msg.vel_des.x, msg.vel_des.y, msg.yawdot_des)
         stamp_ns = msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec
         with self.lock_in:
-            status = self._remote_input.observe(
-                velocity,
-                stamp_ns=stamp_ns,
-                received_at=received_at,
-                ros_now_ns=self.get_clock().now().nanoseconds,
-            )
+            command_age = self._remote_input.snapshot(received_at)["receive_age_ms"]
+            if self._remote_path.input_unsafe(received_at, command_age):
+                status = "upstream_" + self._remote_path.status(received_at, command_age)
+                self._remote_input.reject(status)
+                self._remote_path_blocked = True
+                self.raw_cmd_vel.fill(0.0)
+                self.pending_remote_events.clear()
+            else:
+                status = self._remote_input.observe(
+                    velocity,
+                    stamp_ns=stamp_ns,
+                    received_at=received_at,
+                    ros_now_ns=self.get_clock().now().nanoseconds,
+                )
             accepted = status in ("fresh", "recovered")
             if accepted:
                 # Reconnecting with a held button must not replay an old action.
-                if status == "recovered":
+                synchronize = status == "recovered" or self._remote_path_blocked
+                if synchronize:
                     self.pending_remote_events.clear()
                 events = self.runtime.extract_remote_events(
-                    msg, sync_only=self.step < 2 or status == "recovered"
+                    msg, sync_only=self.step < 2 or synchronize
                 )
                 self.raw_cmd_vel[:] = velocity
                 self.pending_remote_events.extend(events)
+                self._remote_path_blocked = False
             warn = not accepted and received_at >= self._next_remote_warning
             if warn:
                 self._next_remote_warning = received_at + 1.0

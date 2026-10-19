@@ -239,6 +239,9 @@ public:
     bool is_available() override
     {
         if (started_) {
+            // The probe timestamp is reset while the active reader opens.
+            // Its first frame is guarded by ready_timeout_ms, not loss_timeout_ms.
+            if (!ready_) return true;
             return reader_open_ && has_recent_valid_frame();
         }
 
@@ -249,6 +252,11 @@ public:
     bool availability_handles_loss_timeout() const override
     {
         return true;
+    }
+
+    InputFreshness freshness() const override {
+        auto s = InputDriverBase::freshness();
+        s.mode = "periodic"; s.io_kind = "usb_serial_read"; s.open = reader_open_ || probe_open_; return s;
     }
 
     bool is_ready() const override
@@ -348,6 +356,7 @@ private:
 
     void record_valid_frame()
     {
+        freshness_.valid_sample();
         last_valid_frame_ns_ = steady_now_ns();
     }
 
@@ -436,9 +445,13 @@ private:
     {
         std::array<std::uint8_t, 512> bytes{};
         while (true) {
+            freshness_.reader_tick();
             const ssize_t count = read(fd, bytes.data(), bytes.size());
             if (count > 0) {
+                freshness_.read_bytes(static_cast<std::size_t>(count));
+                const auto crc_before = parser.crc_errors();
                 parser.push(bytes.data(), static_cast<std::size_t>(count));
+                freshness_.crc_errors(parser.crc_errors() - crc_before);
                 continue;
             }
             // With VMIN=0/VTIME=0 a non-blocking tty can report a normal
@@ -497,6 +510,7 @@ private:
             struct timeval timeout;
             timeout.tv_sec = 0;
             timeout.tv_usec = 100000;
+            freshness_.reader_tick();
             const int selected = select(active_fd_ + 1, &fds, nullptr, nullptr, &timeout);
             if (stop_flag_) {
                 break;

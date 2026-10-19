@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "remote_controller/config.hpp"
+#include "remote_controller/input_freshness.hpp"
 #include "remote_controller/input_mapper.hpp"
 
 namespace remote_controller {
@@ -40,6 +41,7 @@ public:
     virtual void debug() const
     {
     }
+    virtual InputFreshness freshness() const { return InputFreshness(); }
     virtual void start() = 0;
     virtual void stop() = 0;
 };
@@ -56,7 +58,15 @@ public:
         DriverOutputHandler output_handler,
         DriverLogHandler log_handler);
 
+public:
+    InputFreshness freshness() const override {
+        auto s = freshness_.snapshot();
+        s.source = config_.name; s.device = config_.device; s.timeout_ms = config_.loss_timeout_ms;
+        s.open = is_ready(); return s;
+    }
+
 protected:
+    InputFreshnessTracker freshness_;
     InputDeviceConfig config_;
     InputMapper &mapper_;
     std::mutex &mapper_lock_;

@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 from bxi_example_py_elf3.remote_input import RemoteInputMonitor
+from bxi_example_py_elf3.remote_freshness import RemotePathMonitor
 
 
 @pytest.mark.parametrize("value", [0, -1, float("inf"), float("nan")])
@@ -98,6 +99,7 @@ def controller(demo):
     node = SimpleNamespace(
         runtime=runtime, step=2, lock_in=Lock(),
         _remote_input=RemoteInputMonitor(), _next_remote_warning=0.0,
+        _remote_path=RemotePathMonitor(0.0), _remote_path_blocked=False,
         raw_cmd_vel=np.zeros(3, dtype=np.float32), pending_remote_events=deque(),
         _check_imu_runtime_safety=lambda: None,
         _joint_source=joints, _joint_snapshot=None, _observation=None,
@@ -141,10 +143,11 @@ def test_busy_joint_callback_group_allows_imu_auxiliary_and_remote_execution(dem
         motor_override_timeout_sec=0.2, motor_override_release_blend_sec=0.2,
         motor_override_allow_in_zero_torque=False,
         _remote_input=RemoteInputMonitor(),
-        create_publisher=Mock(), create_subscription=Subscription,
+        create_publisher=Mock(), create_subscription=Subscription, create_timer=Mock(),
         create_client=Mock(), get_logger=Mock(return_value=Mock()),
         odom_callback=Mock(), actuator_callback=Mock(), imu_callback=Mock(),
         touch_callback=Mock(), joy_callback=Mock(), motor_override_callback=Mock(),
+        remote_freshness_callback=Mock(), remote_freshness_check=Mock(),
     )
     demo.BxiExample.init_pub_sub(node)
 
@@ -174,6 +177,8 @@ def test_busy_joint_callback_group_allows_imu_auxiliary_and_remote_execution(dem
 
     assert node.actuator_sub.callback_group.can_execute(node.actuator_sub)
     assert node.imu_sub.callback_group.can_execute(node.imu_sub)
+    assert node.remote_freshness_sub.callback_group is not node.joy_sub.callback_group
+    assert node.remote_freshness_sub.callback_group.can_execute(node.remote_freshness_sub)
 
 
 @pytest.mark.parametrize(
@@ -386,6 +391,37 @@ def test_timeout_zeros_control_snapshot_and_discards_pending_actions(demo):
     assert events == ()
     assert not node.pending_remote_events
     assert node._remote_input.timeouts == 1
+
+
+def test_upstream_usb_delay_clears_commands_and_recovers_without_button_replay(demo):
+    import json
+
+    node = controller(demo)
+    receive(demo, node, message(), 1.0)
+    sample = dict(schema=1, stamp_ns=1_000_000_000, instance=1,
+                  source="crsf", device="/dev/ttyCRSF", mode="periodic",
+                  status="usb_stale", active=True, timeout_ms=300,
+                  reader_age_ms=1, usb_read_age_ms=400,
+                  valid_frame_age_ms=400, publish_age_ms=1,
+                  sample_seq=1, published=1, publish_on_change=False)
+    with patch.object(demo.time, "monotonic", return_value=1.05):
+        demo.BxiExample.remote_freshness_callback(
+            node, SimpleNamespace(data=json.dumps(sample))
+        )
+    np.testing.assert_array_equal(node.raw_cmd_vel, (0, 0, 0))
+    assert not node.pending_remote_events
+    receive(demo, node, message(ns=1_060_000_000), 1.06)
+    assert node._remote_input.last_received_at == 1.0
+    sample.update(status="fresh", stamp_ns=1_100_000_000,
+                  sample_seq=2, usb_read_age_ms=1,
+                  valid_frame_age_ms=1)
+    with patch.object(demo.time, "monotonic", return_value=1.1):
+        demo.BxiExample.remote_freshness_callback(
+            node, SimpleNamespace(data=json.dumps(sample))
+        )
+    receive(demo, node, message(ns=1_110_000_000), 1.11)
+    np.testing.assert_allclose(node.raw_cmd_vel, (0.5, 0, 0))
+    assert not node.pending_remote_events
 
 
 def test_recovery_does_not_replay_held_action_but_allows_next_press(demo):

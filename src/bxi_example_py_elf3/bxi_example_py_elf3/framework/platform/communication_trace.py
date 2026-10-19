@@ -303,6 +303,8 @@ class CommunicationTrace:
                   f"状态={str(context.get('state', '未知')).rsplit('/', 1)[-1]}"]
         if "remote_input_fresh" in context:
             fields.append("遥控有效=" + ("是" if context["remote_input_fresh"] else "否"))
+        if "remote_path_status" in context:
+            fields.append("遥控源=" + str(context["remote_path_status"]))
         if incident_notes:
             fields.append("事件=" + ",".join(incident_notes))
         if detail:

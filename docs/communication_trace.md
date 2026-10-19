@@ -1,7 +1,7 @@
 # 通信停顿的内置记录
 
 用于 ELF3 控制节点与硬件节点运行中突然停顿的定位。属于平台公共能力，不依赖某个 Mod。
-只记录证据，不修改控制输出、QoS、滤波、超时保护或硬件复位策略。
+通信记录本身只采证据；遥控源的新鲜度保护另外会在明确过期时清空输入。
 
 ## 启用与部署
 
@@ -26,7 +26,7 @@
 频率根据最近约 500 ms 的计数估算，启动时窗口可能更短；`--` 表示尚未观测。
 “停更”指距上次回调入口/发布返回的时间，不等于消息的传输耗时。机器人没有操作时，
 如果遥控发布端按变化发送，也可能出现这种记录；不能仅凭它认定 ROS 故障。
-本次精简仅影响诊断输出，不改变 300 ms 遥控新鲜度保护、状态切换或控制命令。
+主日志精简不改变原有 300 ms 命令接收超时；新增的源端过期门控见下文。
 硬件端原有日志策略不受此修改影响。
 
 硬件端需要同时安装对应修改。补丁 [communication_trace_hardware.patch](communication_trace_hardware.patch)
@@ -55,7 +55,15 @@ ros2 launch bxi_example_py_elf3 example_demo_hw.launch.py enable_imu:=false \
   > /var/log/bxi_log/$(date +%Y-%m-%d_%H-%M-%S)_elf.log 2>&1 &
 ```
 
-该重定向能保存两个节点输出。跨电脑启动时，需要同时保留两端的日志。
+直接运行时该重定向仍能保存两个节点输出。通过遥控器 `system.start` 启动时，
+改由 `start_elf_logged.sh` 把输出分成同一时间戳的两份：
+
+- `/var/log/bxi_log/<时间>_elf.log`：主日志，保留原始普通日志、短摘要和异常。
+- `/var/log/bxi_log/trace/<时间>_elf.trace.log`：控制端与硬件端完整 `communication_trace` JSON。
+
+硬件端重复相同的 trace 告警在主日志每5秒最多一行，完整内容仍逐条保留在 trace 文件。
+日志目录不可写时输出回退到启动进程的 journal，避免因分流器退出造成 ROS stdout 堵塞。
+跨电脑启动时，需要同时保留两端的日志。
 
 ## 记录内容
 
@@ -122,3 +130,13 @@ ros2 launch bxi_example_py_elf3 example_demo_hw.launch.py enable_imu:=false \
 `dds_to_callback_ms` 约 451 ms，`source_to_dds_ms` 小于 0.01 ms；没有向电机话题发送消息。
 硬件补丁已在本机 x86 编译，并执行了原子采样/阶段退出/元数据记录的离线 C++ 检查。
 尚未在目标 ARM 机器编译或在真机故障中验证。
+
+## 遥控源端证据
+
+`remote_controller` 现在发布低频 `remote_controller/freshness`，demo 的 `remote_path` 诊断
+将 USB 字节读取、有效协议帧、命令发布、有效命令接收分开观察。源端确认超时后清空输入并发零命令；
+demo 收到明确的源端故障时也会丢弃待处理输入。它与上面的执行器/控制线程
+记录互补。重复异常每5秒一行，正常不逐帧打印；USB 协议没有源时间戳时
+明确标为仅能观测主机到达时间。CRSF 坏 CRC 不会刷新有效帧时间；同值但真实到达的新帧
+会推进序号。普通 joystick 无事件不等于 USB 断链，只有匹配 hidraw 且已确认周期报告时
+才启用周期源过期判断。字段、状态解释和可选配置见 `src/remote_controller/README.md`。

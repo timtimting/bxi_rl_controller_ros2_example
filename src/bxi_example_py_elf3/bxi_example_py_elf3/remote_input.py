@@ -66,6 +66,10 @@ class RemoteInputMonitor:
             and now - self.last_received_at < self.timeout_sec
         )
 
+    def reject(self, reason: str) -> None:
+        self.rejected += 1
+        self.last_rejection = reason
+
     def expire(self, now: float) -> bool:
         """Return True only on the first control cycle after a receive timeout."""
         if self.last_received_at is None or self.is_fresh(now) or self.timed_out:

@@ -108,7 +108,7 @@ install(DIRECTORY launch
 install(DIRECTORY config
          DESTINATION share/${PROJECT_NAME})
 
-install(PROGRAMS scripts/start_imu_if_owned.sh
+install(PROGRAMS scripts/start_imu_if_owned.sh scripts/start_elf_logged.sh scripts/elf_log_split.py
         DESTINATION share/${PROJECT_NAME}/scripts)
 
 ament_export_include_directories(include)
@@ -117,3 +117,29 @@ ament_export_targets(${PROJECT_NAME}_targets)
 ament_export_dependencies(communication yaml-cpp)
 
 ament_package()
+
+if(BUILD_TESTING)
+  add_executable(remote_controller_input_freshness_test test/input_freshness_test.cpp)
+  target_include_directories(remote_controller_input_freshness_test PRIVATE include)
+  target_compile_options(remote_controller_input_freshness_test PRIVATE -UNDEBUG)
+  add_test(NAME remote_controller_input_freshness_test COMMAND remote_controller_input_freshness_test)
+endif()
+
+if(BUILD_TESTING)
+  add_executable(remote_controller_usb_freshness_pty_test test/usb_freshness_pty_test.cpp)
+  target_include_directories(remote_controller_usb_freshness_pty_test PRIVATE include)
+  target_compile_options(remote_controller_usb_freshness_pty_test PRIVATE -UNDEBUG)
+  ament_target_dependencies(remote_controller_usb_freshness_pty_test communication)
+  target_link_libraries(remote_controller_usb_freshness_pty_test remote_controller_core util)
+  add_test(NAME remote_controller_usb_freshness_pty_test COMMAND remote_controller_usb_freshness_pty_test)
+
+  add_executable(remote_controller_input_clear_pty_test test/input_clear_pty_test.cpp)
+  target_include_directories(remote_controller_input_clear_pty_test PRIVATE include)
+  target_compile_options(remote_controller_input_clear_pty_test PRIVATE -UNDEBUG)
+  target_compile_definitions(remote_controller_input_clear_pty_test PRIVATE
+    REMOTE_CONTROLLER_TEST_CONFIG_PATH="${CMAKE_CURRENT_SOURCE_DIR}/config/xbox_default.yaml"
+  )
+  ament_target_dependencies(remote_controller_input_clear_pty_test communication)
+  target_link_libraries(remote_controller_input_clear_pty_test remote_controller_core util)
+  add_test(NAME remote_controller_input_clear_pty_test COMMAND remote_controller_input_clear_pty_test)
+endif()

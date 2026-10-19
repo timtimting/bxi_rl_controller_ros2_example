@@ -138,3 +138,74 @@ sources:
 driver 做非阻塞协议 probe，只有近期收到 CRC 正确帧才会参与抢占；激活后停止收到有效帧
 超过 `loss_timeout_ms` 就会断连。尚未编译的其他 `type` 不会导致节点启动失败：节点会记录
 warning、忽略该候选项，并自动使用下一个可用设备；没有任何可用设备时保持安全停止。
+
+## USB 到 demo 的新鲜度诊断
+
+默认新增 `remote_controller/freshness`（`std_msgs/String`，10Hz JSON）诊断话题，不改变
+`motion_commands` 接口、发布模式、输入选择、滤波或既有超时保护。正常时只有首次状态信息；
+异常变化立即报告，同一异常持续时每5秒一行，恢复后报告一次。demo 的诊断回调组独立于遥控
+命令回调，诊断打印不会占住遥控输入锁。原有 `communication_trace` 继续诊断执行器/控制线程阻塞。
+
+```bash
+ros2 topic echo /remote_controller/freshness --once
+```
+
+主要证据：
+
+- `usb_read_age_ms`/`reads`/`bytes`：驱动实际 `read()` 读到数据的时间和累计数量；读取轮询成功不算新数据。
+- `valid_frame_age_ms`/`sample_seq`/`sample_hz`：有效输入帧的时间、序号与最近约100ms的频率；内容相同的连续帧也计数。
+- `crc_errors`：CRSF CRC 校验失败累计；收到坏帧不会刷新有效帧时间。
+- `reader_age_ms`：读取线程最近一次执行；可以区分线程停顿与设备没有数据。
+- `published`/`publish_age_ms`：`motion_commands` 发布调用返回的计数和年龄；不是下游接收确认。
+- `timer_gaps`：10ms 发布定时器间隔超过100ms的累计次数；恢复后也保留，帮助判断进程调度/阻塞。
+- `matched_subscribers`：当前 ROS 匹配订阅者数量；从非零掉到零时单独记录告警。
+- demo 的 `remote_path` 摘要另列 `demo_age_ms`；使用已有有效命令接收看门狗数据。
+- `instance` 区分发布进程重启，`io_kind` 说明测量层，`observability=host_arrival_only` 说明观测边界。
+  计数及年龄使用单调时钟；诊断消息另外携带 ROS 时间戳供 demo 检查陈旧/倒序消息。
+
+| 状态 | 可以定位到的环节 |
+| --- | --- |
+| `usb_stale` | 周期源没有新的 USB/串口读取数据 |
+| `protocol_stale` | 字节仍到达，但没有新的 CRC 正确通道帧；结合 `crc_errors` 判断 |
+| `reader_stalled` | 驱动读取循环未继续执行 |
+| `device_closed` | 设备描述符已关闭；`last_stop_status` 另存设备停用前的状态 |
+| `publisher_stale` | 驱动诊断仍到达，但 remote controller 未及时发布命令 |
+| `demo_receive_stale` | 发布端报告持续发布，demo 没有新的有效命令；应继续查 DDS/回调/消息校验 |
+| `status_link_stale` | 诊断话题自身停更；不能仅凭此推断 USB 已断开 |
+| `valid_frames_not_advancing` | 诊断消息仍刷新，但有效帧序号没有推进 |
+| `event_source_unverified` | 非周期输入源，静止无事件正常，无法用空闲时长证明 USB 数据过期 |
+
+CRSF（通常通过 `/dev/ttyCRSF` 的 USB 串口）按完整有效通道帧检测，阈值使用该源的
+`loss_timeout_ms`。帧没有设备时间戳/无线链路序号，因此这里只能证明主机读到了新帧，
+不能证明接收机内部没有重发旧数据，也不能测出无线端到主机的绝对延迟。
+
+周期源在设备关闭、读取线程停顿、有效帧或 USB 报告超过 `loss_timeout_ms` 时，
+`remote_controller` 会停止当前输入候选、清空该源所有映射值并立即走零命令安全屏障。
+demo 若收到明确过期的源端诊断，也会清空速度/按键并拒收命令；恢复的首帧只同步按键，
+不重放按住期间的动作。诊断消息自身超时为500ms；从未收到诊断的旧版发布者仍按
+原来的300ms命令接收看门狗保护。进程整体卡死时软件无法保证及时执行清空，
+硬件通信看门狗仍然必需。
+`publish_on_change: true` 的静止无发布会标为 `on_change_idle_or_fresh`，不会被这套诊断
+误报成 USB 故障；demo 原有的命令接收看门狗仍独立工作。
+
+Linux joystick `/dev/input/js*` 通常只报告变化事件。驱动会尝试从该设备的 sysfs 路径
+找到唯一匹配的 `/dev/hidraw*`，独立只读打开，记录原始 HID 输入报告，不抢占设备、
+不消费 joystick 事件队列。若权限不足或无法唯一匹配，会明确提示新鲜度不可观测，
+仍正常使用原 joystick 驱动，绝不把轮询空转伪装成新 USB 数据。可在 `sources.gamepad` 配置：
+
+```yaml
+# 可选：自动发现失败时指定与该手柄匹配的原始设备
+freshness_hidraw_device: /dev/hidraw3
+# 默认 false：只有确认设备在摇杆静止时也持续发送报告后，才设为 true
+freshness_hidraw_periodic: true
+```
+
+`io_kind=usb_hidraw_report` 表示确实读到了原始 HID 报告；未取得 hidraw 时为
+`joystick_event`，不能把事件静止当作 USB 断链。观察者按原读取循环轮询，最长正常
+轮询间隔约100ms，报告年龄是用户态读取时间，不是 USB 硬件采样时间。
+只有实际确认静止也持续出报告，才能启用 `freshness_hidraw_periodic: true`；启用后
+hidraw 不可读会阻止输入就绪，运行中断开会清空输出。蓝牙手柄如果只在状态变化时
+发送报告，无法单靠 `/dev/input/js*` 证明链路实时性，应继续依赖连接事件和命令看门狗。
+
+部署时一起构建 `remote_controller` 与 `bxi_example_py_elf3`，重新加载 install 环境并重启
+这两个节点。只更新 demo 无法获得源端证据，会显示 `status_unavailable`。

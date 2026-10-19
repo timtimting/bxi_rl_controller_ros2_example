@@ -29,6 +29,8 @@ public:
     {
     }
 
+    std::uint64_t crc_errors() const { return crc_errors_; }
+
     void reset()
     {
         buffer_.clear();
@@ -90,6 +92,7 @@ public:
     }
 
 private:
+    std::uint64_t crc_errors_ = 0;
     std::vector<std::uint8_t> buffer_;
     ChannelsHandler channels_handler_;
 
@@ -125,6 +128,7 @@ private:
                 buffer_.data() + 2,
                 frame_length - 1);
             if (crc_calculated != crc_received) {
+                ++crc_errors_;
                 // Drop only the possible frame head so a later 0xC8 byte can
                 // still become the beginning of the next frame.
                 buffer_.erase(buffer_.begin());

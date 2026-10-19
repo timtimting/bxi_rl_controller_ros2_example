@@ -1,4 +1,5 @@
 #include "remote_controller/drivers/input_driver.hpp"
+#include "remote_controller/hidraw_observer.hpp"
 
 #include <cerrno>
 #include <fcntl.h>
@@ -43,9 +44,37 @@ public:
         return true;
     }
 
+    InputFreshness freshness() const override {
+        auto s = InputDriverBase::freshness();
+        s.io_kind = "joystick_event";
+        {
+            const std::lock_guard<std::mutex> guard(hidraw_lock_);
+            if (hidraw_.is_open()) {
+                const auto raw = hidraw_.snapshot();
+                s.io_kind = "usb_hidraw_report"; s.device = hidraw_.path();
+                s.io_ns = raw.io_ns; s.reads = raw.reads; s.bytes = raw.bytes;
+                s.sample_ns = raw.sample_ns; s.samples = raw.samples;
+            }
+            if (hidraw_periodic()) {
+                s.mode = "periodic";
+                s.io_kind = "usb_hidraw_report";
+                s.device = hidraw_.path();
+                s.open = available_ && hidraw_.is_open();
+            }
+        }
+        if (!hidraw_periodic()) s.open = available_;
+        return s;
+    }
+
     bool is_ready() const override
     {
-        return ready_;
+        if (!ready_) return false;
+        if (!hidraw_periodic()) return true;
+        const std::lock_guard<std::mutex> guard(hidraw_lock_);
+        if (!hidraw_.is_open()) return false;
+        const auto sample = hidraw_.snapshot();
+        return sample.sample_ns > 0 &&
+            freshness_age_ms(sample.sample_ns, freshness_now_ns()) <= config_.loss_timeout_ms;
     }
 
     void debug() const override
@@ -80,6 +109,13 @@ public:
     }
 
 private:
+    bool hidraw_periodic() const {
+        const auto option = config_.options.find("freshness_hidraw_periodic");
+        return option != config_.options.end() && option->second == "true";
+    }
+
+    mutable std::mutex hidraw_lock_;
+    HidrawObserver hidraw_;
     int fd_ = -1;
     std::thread thread_;
     std::atomic<bool> available_{false};
@@ -102,6 +138,13 @@ private:
             return;
         }
         available_ = true;
+        {
+            const std::lock_guard<std::mutex> guard(hidraw_lock_);
+            const auto option = config_.options.find("freshness_hidraw_device");
+            const bool opened = hidraw_.open_device(config_.device, option == config_.options.end() ? "" : option->second);
+            log(opened ? "USB report observer opened: " + hidraw_.path() :
+                "USB report freshness unavailable: no readable matching hidraw; joystick events are change-only, idle is not a disconnect");
+        }
         log("open joystick " + config_.device);
 
         unsigned char axis_count = 0;
@@ -114,6 +157,8 @@ private:
         }
 
         while (!stop_flag_) {
+            freshness_.reader_tick();
+            { const std::lock_guard<std::mutex> guard(hidraw_lock_); hidraw_.poll(); }
             fd_set fds;
             FD_ZERO(&fds);
             FD_SET(fd_, &fds);
@@ -140,6 +185,8 @@ private:
             struct js_event event;
             const ssize_t length = read(fd_, &event, sizeof(event));
             if (length == sizeof(event)) {
+                freshness_.read_bytes(static_cast<std::size_t>(length));
+                freshness_.valid_sample();
                 const bool initial = (event.type & JS_EVENT_INIT) != 0;
                 const unsigned char event_type = event.type & ~JS_EVENT_INIT;
                 if (event_type == JS_EVENT_AXIS) {
@@ -184,6 +231,7 @@ private:
         }
 
         available_ = false;
+        { const std::lock_guard<std::mutex> guard(hidraw_lock_); hidraw_.close_device(); }
         close_fd();
     }
 
