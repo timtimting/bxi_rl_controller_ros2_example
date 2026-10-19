@@ -12,6 +12,7 @@ import pytest
 
 from bxi_example_py_elf3.remote_input import RemoteInputMonitor
 from bxi_example_py_elf3.remote_freshness import RemotePathMonitor
+from bxi_example_py_elf3.imu_freshness import ImuFallObserver
 
 
 @pytest.mark.parametrize("value", [0, -1, float("inf"), float("nan")])
@@ -108,6 +109,9 @@ def controller(demo):
         _cmd_snapshot=np.zeros(3, dtype=np.float32),
         quat_xyzw=np.zeros(4), quat_wxyz=np.zeros(4), omega=np.zeros(3),
         linear_acceleration=np.zeros(3), _imu_protection_latched=False,
+        _imu_fall_observer=ImuFallObserver(), _imu_received=False,
+        _imu_first_received_logged=False, _imu_last_received_at=None,
+        _imu_invalid_frame_count=0, _next_imu_invalid_warning=0.0,
         get_logger=Mock(return_value=Mock()),
         get_clock=lambda: SimpleNamespace(
             now=lambda: SimpleNamespace(nanoseconds=1_000_000_000)
@@ -370,6 +374,34 @@ def test_slow_input_log_does_not_block_remote_reception(demo, case, log_level):
         assert node._imu_received and node._imu_first_received_logged
     else:
         assert node._motor_override_waiting_for_joints_warned
+
+
+def test_fall_confirmation_flows_from_imu_messages_to_control_snapshot(demo):
+    from bxi_example_py_elf3.framework.runtime.controller import RobotControlFramework
+
+    node = controller(demo)
+    node.imu_required = False
+    node.topic_prefix = "simulation/"
+    roll = np.deg2rad(65) / 2
+    imu = SimpleNamespace(
+        header=SimpleNamespace(stamp=SimpleNamespace(sec=1, nanosec=0)),
+        orientation=SimpleNamespace(x=np.sin(roll), y=0.0, z=0.0, w=np.cos(roll)),
+        angular_velocity=SimpleNamespace(x=0.0, y=0.0, z=0.0),
+        linear_acceleration=SimpleNamespace(x=0.0, y=0.0, z=0.0),
+    )
+    for frame in range(1, 6):
+        imu.header.stamp.nanosec = frame
+        demo.BxiExample.imu_callback(node, imu)
+        observation, _ = demo.BxiExample.snapshot_control_inputs(node)
+        context = SimpleNamespace(
+            _orientation_unsafe_confirmed=observation.orientation_unsafe_confirmed
+        )
+        assert RobotControlFramework.is_orientation_unsafe(
+            context, observation.quat_xyzw
+        ) is (frame == 5)
+    node.get_logger().warning.assert_called_once_with(
+        "unsafe orientation confirmed by 5 consecutive IMU frames"
+    )
 
 
 def test_repeated_full_state_has_no_duplicate_button_event_and_recovers_lost_stop(demo):

@@ -26,6 +26,7 @@ class RobotObservation:
     omega: FloatArray
     raw_cmd_vel: FloatArray
     linear_acceleration: FloatArray | None = None
+    orientation_unsafe_confirmed: bool | None = None
 
 
 class ControlPlatformAdapter(Protocol):

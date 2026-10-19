@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-import math
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -21,7 +20,7 @@ from bxi_example_py_elf3.framework.mod_api import (
     RobotControlState,
     TransitionSpec,
 )
-from bxi_example_py_elf3.framework.mod_api.geometry import quaternion_to_euler_array
+from bxi_example_py_elf3.framework.mod_api.geometry import orientation_is_unsafe
 from bxi_example_py_elf3.framework.platform.cpu_affinity import (
     CpuAffinityPlan,
     CpuAffinityRole,
@@ -64,6 +63,7 @@ class RobotControlFramework:
         self.loop_count = 0
 
         self.current_quat_xyzw = np.zeros(4, dtype=np.float64)
+        self._orientation_unsafe_confirmed: bool | None = None
         self.current_quat_wxyz = np.zeros(4, dtype=np.float64)
         self.current_omega = np.zeros(3, dtype=np.float64)
         self.current_linear_acceleration = np.zeros(3, dtype=np.float64)
@@ -394,12 +394,9 @@ class RobotControlFramework:
             )
 
     def is_orientation_unsafe(self, quat_xyzw: object) -> bool:
-        angles = quaternion_to_euler_array(quat_xyzw)
-        angles[angles > math.pi] -= 2 * math.pi
-        return bool(
-            (np.abs(angles[0]) > (math.pi / 3.0))
-            or (np.abs(angles[1]) > (math.pi / 3.0))
-        )
+        if self._orientation_unsafe_confirmed is not None:
+            return self._orientation_unsafe_confirmed
+        return orientation_is_unsafe(quat_xyzw)
 
     def preheat_model(
         self,
@@ -474,6 +471,7 @@ class RobotControlFramework:
         self.inference_frame.timestamp_ns = joints.timestamp_ns
 
         self._copy_vector(observation.quat_xyzw, self.current_quat_xyzw, "quat_xyzw")
+        self._orientation_unsafe_confirmed = observation.orientation_unsafe_confirmed
         self._copy_vector(observation.quat_wxyz, self.current_quat_wxyz, "quat_wxyz")
         self._copy_vector(observation.omega, self.current_omega, "omega")
         if observation.linear_acceleration is None:

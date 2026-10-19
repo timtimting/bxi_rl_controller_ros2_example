@@ -38,7 +38,7 @@ from bxi_example_py_elf3.framework.joints import (
     NamedJointCommandOverride,
 )
 from bxi_example_py_elf3.framework.mod_api import MotorFrame
-from bxi_example_py_elf3.imu_freshness import ImuStampObserver
+from bxi_example_py_elf3.imu_freshness import ImuFallObserver, ImuStampObserver
 from bxi_example_py_elf3.remote_freshness import RemotePathMonitor
 from bxi_example_py_elf3.remote_input import RemoteInputMonitor
 from bxi_example_py_elf3.framework.platform import (
@@ -140,6 +140,7 @@ class BxiExample(Node):
         self._imu_invalid_frame_count = 0
         self._next_imu_invalid_warning = 0.0
         self._imu_stamp_observer = ImuStampObserver()
+        self._imu_fall_observer = ImuFallObserver()
         self._next_imu_stamp_warning = 0.0
         self._imu_stamp_warning_count = 0
         self._imu_startup_started_at = None
@@ -437,6 +438,9 @@ class BxiExample(Node):
                 timestamp_ns=latest_joints.timestamp_ns,
             )
             np.copyto(self._quat_xyzw_snapshot, self.quat_xyzw)
+            self._observation.orientation_unsafe_confirmed = (
+                self._imu_fall_observer.snapshot_confirmed()
+            )
             np.copyto(self._quat_wxyz_snapshot, self.quat_wxyz)
             np.copyto(self._omega_snapshot, self.omega)
             np.copyto(self._linear_acceleration_snapshot, self.linear_acceleration)
@@ -893,6 +897,7 @@ class BxiExample(Node):
         if not quaternion_valid or not vectors_valid:
             now = time.monotonic()
             with self.lock_in:
+                self._imu_fall_observer.reset_streak()
                 self._imu_invalid_frame_count += 1
                 invalid_count = self._imu_invalid_frame_count
                 should_log = now >= self._next_imu_invalid_warning
@@ -906,6 +911,8 @@ class BxiExample(Node):
                 )
             return
 
+        stamp = getattr(getattr(msg, "header", None), "stamp", None)
+        stamp_ns = 0 if stamp is None else stamp.sec * 1_000_000_000 + stamp.nanosec
         with self.lock_in:
             self.quat_xyzw[:] = quat.x, quat.y, quat.z, quat.w
             self.quat_wxyz[:] = quat.w, quat.x, quat.y, quat.z
@@ -913,8 +920,15 @@ class BxiExample(Node):
             self.linear_acceleration[:] = acceleration.x, acceleration.y, acceleration.z
             self._imu_received = True
             self._imu_last_received_at = time.monotonic()
+            fall_confirmed = self._imu_fall_observer.observe(
+                self.quat_xyzw, stamp_ns=stamp_ns
+            )
             first_imu_frame = not self._imu_first_received_logged
             self._imu_first_received_logged = True
+        if fall_confirmed:
+            self.get_logger().warning(
+                "unsafe orientation confirmed by 5 consecutive IMU frames"
+            )
         if first_imu_frame:
             self.get_logger().info(
                 f"received first IMU frame on {self.topic_prefix}imu_data"

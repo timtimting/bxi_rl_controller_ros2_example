@@ -164,9 +164,16 @@ def quaternion_to_euler_array(quat):
     return np.array([roll_x, pitch_y, yaw_z])
 
 
+def orientation_is_unsafe(quat_xyzw):
+    angles = quaternion_to_euler_array(quat_xyzw)
+    angles[angles > np.pi] -= 2 * np.pi
+    return bool(np.any(np.abs(angles[:2]) > np.pi / 3.0))
+
+
 __all__ = [
     "get_gravity_orientation",
     "matrix_to_quaternion_simple",
+    "orientation_is_unsafe",
     "quat_rotate_inverse",
     "quaternion_conjugate",
     "quaternion_multiply",
