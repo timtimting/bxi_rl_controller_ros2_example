@@ -1,8 +1,49 @@
 """Transport-age diagnostics for IMU ROS messages (not device sample age)."""
 
+from dataclasses import dataclass
+import math
 import time
 
 from bxi_example_py_elf3.framework.mod_api.geometry import orientation_is_unsafe
+
+
+@dataclass(frozen=True)
+class ImuFrameAssessment:
+    quaternion_norm: float
+    payload_valid: bool
+    accepted: bool
+    reasons: tuple[str, ...]
+
+
+def assess_imu_frame(
+    quat_xyzw, omega, acceleration, *, stamp_status, require_stamp,
+    receive_gap_ms, timeout_ms,
+):
+    quaternion_norm = math.sqrt(sum(value * value for value in quat_xyzw))
+    quaternion_finite = all(math.isfinite(value) for value in quat_xyzw)
+    omega_finite = all(math.isfinite(value) for value in omega)
+    acceleration_finite = all(math.isfinite(value) for value in acceleration)
+    quaternion_valid = quaternion_finite and 0.9 <= quaternion_norm <= 1.1
+    payload_valid = quaternion_valid and omega_finite and acceleration_finite
+    reasons = []
+    if require_stamp and stamp_status != "fresh":
+        reasons.append(f"stamp_{stamp_status}")
+    if not quaternion_finite:
+        reasons.append("nonfinite_quaternion")
+    elif not quaternion_valid:
+        reasons.append("quaternion_norm_out_of_range")
+    if not omega_finite:
+        reasons.append("nonfinite_angular_velocity")
+    if not acceleration_finite:
+        reasons.append("nonfinite_linear_acceleration")
+    if require_stamp and receive_gap_ms is not None and receive_gap_ms >= timeout_ms:
+        reasons.append("receive_gap")
+    return ImuFrameAssessment(
+        quaternion_norm=quaternion_norm,
+        payload_valid=payload_valid,
+        accepted=payload_valid and (not require_stamp or stamp_status == "fresh"),
+        reasons=tuple(reasons),
+    )
 
 
 class ImuStampObserver:
@@ -28,6 +69,49 @@ class ImuStampObserver:
             status = "fresh"
         self.last_stamp_ns = stamp_ns
         return status, age_ms
+
+
+class ImuFaultObserver:
+    """Confirm bad frames or a sustained receive gap without counting spin cycles."""
+
+    def __init__(self, confirm_count=5):
+        if (
+            not isinstance(confirm_count, int)
+            or isinstance(confirm_count, bool)
+            or confirm_count < 2
+        ):
+            raise ValueError("IMU fault confirmation requires at least two checks")
+        self.confirm_count = confirm_count
+        self.frame_streak = 0
+        self.timeout_streak = 0
+        self._next_timeout_check_at = None
+
+    def observe_frame(self, faulted):
+        previous = self.frame_streak
+        self.frame_streak = (
+            min(previous + 1, self.confirm_count) if faulted else 0
+        )
+        confirmed = self.frame_streak == self.confirm_count and previous < self.confirm_count
+        return self.frame_streak, confirmed
+
+    def reset_timeout(self):
+        self.timeout_streak = 0
+        self._next_timeout_check_at = None
+
+    def check_timeout(self, now, last_valid_at, timeout_sec, check_period_sec):
+        if last_valid_at is None or now - last_valid_at < timeout_sec:
+            self.reset_timeout()
+            return None
+        if self._next_timeout_check_at is not None and now < self._next_timeout_check_at:
+            return None
+        previous = self.timeout_streak
+        self.timeout_streak = min(previous + 1, self.confirm_count)
+        self._next_timeout_check_at = now + check_period_sec
+        return (
+            now - last_valid_at,
+            self.timeout_streak,
+            self.timeout_streak == self.confirm_count and previous < self.confirm_count,
+        )
 
 
 class ImuFallObserver:

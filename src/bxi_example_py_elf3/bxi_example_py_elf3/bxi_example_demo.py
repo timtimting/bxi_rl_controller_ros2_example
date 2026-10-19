@@ -39,7 +39,13 @@ from bxi_example_py_elf3.framework.joints import (
 )
 from bxi_example_py_elf3.framework.mod_api import MotorFrame
 from bxi_example_py_elf3.imu_diagnostics import ImuFrameRecorder, format_imu_evidence
-from bxi_example_py_elf3.imu_freshness import ImuFallObserver, ImuStampObserver
+from bxi_example_py_elf3.imu_freshness import (
+    ImuFallObserver,
+    ImuFaultObserver,
+    ImuStampObserver,
+    assess_imu_frame,
+)
+from bxi_example_py_elf3.framework.mod_api.geometry import quaternion_to_euler_array
 from bxi_example_py_elf3.remote_freshness import RemotePathMonitor
 from bxi_example_py_elf3.remote_input import RemoteInputMonitor
 from bxi_example_py_elf3.framework.platform import (
@@ -137,13 +143,14 @@ class BxiExample(Node):
         self._imu_received = False
         self._imu_last_received_at = None
         self._imu_protection_latched = False
+        self._imu_fall_protection_latched = False
+        self._next_imu_fall_request_warning = 0.0
         self._imu_first_received_logged = False
         self._imu_invalid_frame_count = 0
-        self._next_imu_invalid_warning = 0.0
         self._imu_stamp_observer = ImuStampObserver()
+        self._imu_fault_observer = ImuFaultObserver(confirm_count=5)
         self._imu_fall_observer = ImuFallObserver()
         self._imu_frame_recorder = ImuFrameRecorder()
-        self._next_imu_stamp_warning = 0.0
         self._imu_stamp_warning_count = 0
         self._imu_startup_started_at = None
         self._imu_startup_timeout_logged = False
@@ -455,7 +462,7 @@ class BxiExample(Node):
             np.copyto(self._cmd_snapshot, self.raw_cmd_vel)
             events = (
                 ()
-                if self._imu_protection_latched
+                if self._imu_protection_latched or self._imu_fall_protection_latched
                 else tuple(self.pending_remote_events)
             )
             self.pending_remote_events.clear()
@@ -473,6 +480,7 @@ class BxiExample(Node):
             return
         now = time.monotonic()
         evidence = None
+        timeout_check = None
         with self.lock_in:
             last_received_at = self._imu_last_received_at
             imu_received = self._imu_received
@@ -480,16 +488,39 @@ class BxiExample(Node):
                 imu_received
                 and last_received_at is not None
                 and not self._imu_protection_latched
-                and now - last_received_at >= self.imu_runtime_timeout_sec
+                and not self._imu_fall_protection_latched
             ):
-                self._imu_protection_latched = True
-                evidence = self._imu_frame_recorder.trigger(
-                    "runtime_timeout", at=now,
-                    last_valid_age_ms=(now - last_received_at) * 1000,
-                    timeout_ms=self.imu_runtime_timeout_sec * 1000,
+                timeout_check = self._imu_fault_observer.check_timeout(
+                    now, last_received_at, self.imu_runtime_timeout_sec,
+                    self.runtime.scheduler.period_sec,
                 )
+                if timeout_check is not None and timeout_check[2]:
+                    self._imu_protection_latched = True
+                    evidence = self._imu_frame_recorder.trigger(
+                        "runtime_timeout", at=now,
+                        last_valid_age_ms=timeout_check[0] * 1000,
+                        timeout_ms=self.imu_runtime_timeout_sec * 1000,
+                        confirm_checks=self._imu_fault_observer.confirm_count,
+                    )
             protection_latched = self._imu_protection_latched
+            fall_latched = self._imu_fall_protection_latched
         if not imu_received or last_received_at is None:
+            return
+        if timeout_check is not None:
+            age_sec, streak, _ = timeout_check
+            self.get_logger().warning(
+                f"IMU receive timeout: no valid frame for {age_sec:.3f}s; "
+                f"check={streak}/{self._imu_fault_observer.confirm_count}"
+            )
+        if fall_latched:
+            target = "com.bxi.basic_actions/zero_torque"
+            if self.runtime.current_state_name != target:
+                accepted = self.runtime.request_state(
+                    target, trigger="imu_fall_confirmed", force=True,
+                )
+                if not accepted and now >= self._next_imu_fall_request_warning:
+                    self._next_imu_fall_request_warning = now + 1.0
+                    self.get_logger().error("failed to request locked IMU fall protection")
             return
         if not protection_latched:
             return
@@ -508,7 +539,8 @@ class BxiExample(Node):
             self.get_logger().error(
                 f"IMU data timeout: no valid frame for "
                 f"{now - last_received_at:.3f}s; "
-                "requesting locked IMU protection state; "
+                f"confirmed across {self._imu_fault_observer.confirm_count} "
+                "control checks; requesting locked IMU protection state; "
                 f"evidence={format_imu_evidence(evidence)}"
             )
         if not accepted:
@@ -525,15 +557,24 @@ class BxiExample(Node):
                 "IMU protection release requested but the recovery interface is disabled"
             )
             return False
+        if self._imu_fall_protection_latched:
+            self.get_logger().warning(
+                "IMU protection release rejected because fall protection is latched"
+            )
+            return False
         with self.lock_in:
             fresh = (
                 self._imu_last_received_at is not None
                 and time.monotonic() - self._imu_last_received_at
                 < self.imu_runtime_timeout_sec
             )
-        if not fresh:
+            faulted = (
+                self._imu_fault_observer.frame_streak > 0
+                or self._imu_fault_observer.timeout_streak > 0
+            )
+        if not fresh or faulted:
             self.get_logger().warning(
-                "IMU protection release rejected because IMU data is still stale"
+                "IMU protection release rejected because IMU data is stale or abnormal"
             )
             return False
         self._imu_protection_latched = False
@@ -897,107 +938,123 @@ class BxiExample(Node):
         stamp_status, stamp_age_ms = "unchecked", None
         if self.imu_required:
             stamp_status, stamp_age_ms = self._imu_stamp_observer.observe(stamp)
-            if stamp_status != "fresh":
-                self._imu_stamp_warning_count += 1
-                now = time.monotonic()
-                if now >= self._next_imu_stamp_warning:
-                    self._next_imu_stamp_warning = now + 5.0
-                    self.get_logger().warning(
-                        "IMU ROS stamp diagnostic: status=%s transport_age=%s ms "
-                        "count=%d (observe only; device sample age unknown)"
-                        % (
-                            stamp_status,
-                            "n/a" if stamp_age_ms is None else f"{stamp_age_ms:.1f}",
-                            self._imu_stamp_warning_count,
-                        )
-                    )
         quat = msg.orientation
         avel = msg.angular_velocity
         acceleration = msg.linear_acceleration
         quat_xyzw = (quat.x, quat.y, quat.z, quat.w)
         omega = (avel.x, avel.y, avel.z)
         linear_acceleration = (acceleration.x, acceleration.y, acceleration.z)
-        quaternion_norm = math.sqrt(
-            quat.w * quat.w + quat.x * quat.x + quat.y * quat.y + quat.z * quat.z
-        )
-        quaternion_valid = all(
-            math.isfinite(value) for value in (quat.w, quat.x, quat.y, quat.z)
-        ) and 0.9 <= quaternion_norm <= 1.1
-        vectors_valid = all(
-            math.isfinite(value)
-            for value in (
-                avel.x,
-                avel.y,
-                avel.z,
-                acceleration.x,
-                acceleration.y,
-                acceleration.z,
-            )
-        )
-        if not quaternion_valid or not vectors_valid:
-            reasons = []
-            if not all(math.isfinite(value) for value in quat_xyzw):
-                reasons.append("nonfinite_quaternion")
-            elif not 0.9 <= quaternion_norm <= 1.1:
-                reasons.append("quaternion_norm_out_of_range")
-            if not all(math.isfinite(value) for value in omega):
-                reasons.append("nonfinite_angular_velocity")
-            if not all(math.isfinite(value) for value in linear_acceleration):
-                reasons.append("nonfinite_linear_acceleration")
-            reason = ",".join(reasons)
-            with self.lock_in:
-                followups = self._imu_frame_recorder.record(
-                    received_at=received_at, frame_id=frame_id, stamp_ns=stamp_ns,
-                    stamp_status=stamp_status, transport_age_ms=stamp_age_ms,
-                    valid=False, reason=reason, quat_xyzw=quat_xyzw,
-                    omega=omega, acceleration=linear_acceleration,
-                )
-                self._imu_fall_observer.reset_streak()
-                self._imu_invalid_frame_count += 1
-                invalid_count = self._imu_invalid_frame_count
-                should_log = received_at >= self._next_imu_invalid_warning
-                if should_log:
-                    self._next_imu_invalid_warning = received_at + 5.0
-            if should_log:
-                self.get_logger().warning(
-                    "dropping invalid IMU frame: "
-                    f"reason={reason}, "
-                    f"quaternion_norm={quaternion_norm:.6f}, "
-                    f"count={invalid_count}"
-                )
-            self._log_imu_followups(followups)
-            return
-
+        frame_evidence = None
+        fall_evidence = None
+        fall_confirmed = False
+        warn_orientation = False
         with self.lock_in:
+            last_valid_at = self._imu_last_received_at
+            gap_ms = (
+                (received_at - last_valid_at) * 1000
+                if last_valid_at is not None else None
+            )
+            assessment = assess_imu_frame(
+                quat_xyzw, omega, linear_acceleration,
+                stamp_status=stamp_status, require_stamp=self.imu_required,
+                receive_gap_ms=gap_ms,
+                timeout_ms=self.imu_runtime_timeout_sec * 1000,
+            )
+            reasons = assessment.reasons
+            accepted = assessment.accepted
+            already_protected = (
+                self._imu_protection_latched or self._imu_fall_protection_latched
+            )
+            streak, frame_fault_confirmed = self._imu_fault_observer.observe_frame(
+                bool(reasons)
+            )
+            warn_frame = bool(reasons) and not already_protected and (
+                streak < self._imu_fault_observer.confirm_count or frame_fault_confirmed
+            )
+            if not assessment.payload_valid:
+                self._imu_invalid_frame_count += 1
+            if self.imu_required and stamp_status != "fresh":
+                self._imu_stamp_warning_count += 1
             followups = self._imu_frame_recorder.record(
                 received_at=received_at, frame_id=frame_id, stamp_ns=stamp_ns,
                 stamp_status=stamp_status, transport_age_ms=stamp_age_ms,
-                valid=True, reason=None, quat_xyzw=quat_xyzw,
+                valid=assessment.payload_valid, accepted=accepted,
+                reason=",".join(reasons) or None, quat_xyzw=quat_xyzw,
                 omega=omega, acceleration=linear_acceleration,
             )
-            self.quat_xyzw[:] = quat_xyzw
-            self.quat_wxyz[:] = quat.w, quat.x, quat.y, quat.z
-            self.omega[:] = omega
-            self.linear_acceleration[:] = linear_acceleration
-            self._imu_received = True
-            self._imu_last_received_at = received_at
-            fall_confirmed = self._imu_fall_observer.observe(
-                self.quat_xyzw, stamp_ns=stamp_ns
-            )
-            evidence = (
-                self._imu_frame_recorder.trigger(
+            if accepted:
+                self.quat_xyzw[:] = quat_xyzw
+                self.quat_wxyz[:] = quat.w, quat.x, quat.y, quat.z
+                self.omega[:] = omega
+                self.linear_acceleration[:] = linear_acceleration
+                self._imu_received = True
+                self._imu_last_received_at = received_at
+                self._imu_fault_observer.reset_timeout()
+                prior_fall_streak = self._imu_fall_observer.consecutive
+                fall_confirmed = self._imu_fall_observer.observe(
+                    self.quat_xyzw, stamp_ns=stamp_ns
+                )
+                fall_streak = self._imu_fall_observer.consecutive
+                warn_orientation = (
+                    fall_streak > 0
+                    and prior_fall_streak < self._imu_fall_observer.confirm_frames
+                )
+            else:
+                self._imu_fall_observer.reset_streak()
+                fall_streak = 0
+            if fall_confirmed:
+                self._imu_fall_protection_latched = self.imu_required
+                fall_evidence = self._imu_frame_recorder.trigger(
                     "fall_confirmed", at=received_at,
                     threshold_deg=60, confirm_frames=self._imu_fall_observer.confirm_frames,
                 )
-                if fall_confirmed else None
-            )
-            first_imu_frame = not self._imu_first_received_logged
-            self._imu_first_received_logged = True
+            if (
+                frame_fault_confirmed
+                and self.imu_required
+                and self._imu_received
+                and not self._imu_protection_latched
+                and not self._imu_fall_protection_latched
+            ):
+                self._imu_protection_latched = True
+                frame_evidence = self._imu_frame_recorder.trigger(
+                    "frame_fault_confirmed", at=received_at,
+                    reasons=tuple(reasons), confirm_frames=self._imu_fault_observer.confirm_count,
+                    last_valid_age_ms=(
+                        (received_at - last_valid_at) * 1000
+                        if last_valid_at is not None else None
+                    ),
+                )
+            first_imu_frame = accepted and not self._imu_first_received_logged
+            if accepted:
+                self._imu_first_received_logged = True
         self._log_imu_followups(followups)
+        if warn_frame:
+            self.get_logger().warning(
+                f"IMU frame anomaly: reason={','.join(reasons)}, "
+                f"streak={streak}/{self._imu_fault_observer.confirm_count}, "
+                f"frame_id={frame_id}, stamp_ns={stamp_ns}, "
+                f"stamp_status={stamp_status}, transport_age_ms={stamp_age_ms}, "
+                f"receive_gap_ms={gap_ms}, quat_xyzw={quat_xyzw}, "
+                f"quat_norm={assessment.quaternion_norm:.6f}, omega_rad_s={omega}, "
+                f"accel_m_s2={linear_acceleration}"
+            )
+        if frame_evidence is not None:
+            self.get_logger().error(
+                "IMU frame anomalies confirmed; requesting locked IMU protection state; "
+                f"evidence={format_imu_evidence(frame_evidence)}"
+            )
+        if warn_orientation:
+            roll, pitch, _ = quaternion_to_euler_array(quat_xyzw)
+            self.get_logger().warning(
+                f"IMU orientation over limit: roll={math.degrees(roll):.1f} deg, "
+                f"pitch={math.degrees(pitch):.1f} deg, limit=60 deg, "
+                f"streak={fall_streak}/{self._imu_fall_observer.confirm_frames}, "
+                f"stamp_ns={stamp_ns}, quat_xyzw={quat_xyzw}"
+            )
         if fall_confirmed:
             self.get_logger().warning(
                 "unsafe orientation confirmed by 5 consecutive IMU frames; "
-                f"evidence={format_imu_evidence(evidence)}"
+                f"evidence={format_imu_evidence(fall_evidence)}"
             )
         if first_imu_frame:
             self.get_logger().info(

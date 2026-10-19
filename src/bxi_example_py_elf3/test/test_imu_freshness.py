@@ -4,7 +4,12 @@ import json
 import numpy as np
 import pytest
 
-from bxi_example_py_elf3.imu_freshness import ImuFallObserver, ImuStampObserver
+from bxi_example_py_elf3.imu_freshness import (
+    ImuFallObserver,
+    ImuFaultObserver,
+    ImuStampObserver,
+    assess_imu_frame,
+)
 from bxi_example_py_elf3.imu_diagnostics import ImuFrameRecorder, format_imu_evidence
 
 
@@ -20,6 +25,63 @@ def test_transport_stamp_diagnostics():
     assert observer.observe(stamp(1_999_000_000), 2_003_000_000)[0] == "reversed"
     assert observer.observe(stamp(2_010_000_000), 2_200_000_000)[0] == "stale"
     assert observer.observe(stamp(2_500_000_000), 2_300_000_000)[0] == "future"
+
+
+@pytest.mark.parametrize(
+    ("stamp_status", "quat", "gap_ms", "expected_reason", "accepted"),
+    [
+        ("fresh", (0.0, 0.0, 0.0, 1.0), 5.0, None, True),
+        ("stale", (0.0, 0.0, 0.0, 1.0), 5.0, "stamp_stale", False),
+        ("fresh", (0.0, 0.0, 0.0, 0.5), 5.0,
+         "quaternion_norm_out_of_range", False),
+        ("fresh", (0.0, 0.0, 0.0, 1.0), 110.0, "receive_gap", True),
+    ],
+)
+def test_imu_frame_assessment(stamp_status, quat, gap_ms, expected_reason, accepted):
+    assessment = assess_imu_frame(
+        quat, (0.0, 0.0, 0.0), (0.0, 0.0, 9.81),
+        stamp_status=stamp_status, require_stamp=True,
+        receive_gap_ms=gap_ms, timeout_ms=100.0,
+    )
+    assert assessment.accepted is accepted
+    assert (assessment.reasons[0] if assessment.reasons else None) == expected_reason
+
+
+def test_nonfinite_imu_vector_is_rejected():
+    assessment = assess_imu_frame(
+        (0.0, 0.0, 0.0, 1.0), (float("nan"), 0.0, 0.0),
+        (0.0, 0.0, 9.81), stamp_status="fresh", require_stamp=True,
+        receive_gap_ms=5.0, timeout_ms=100.0,
+    )
+    assert not assessment.payload_valid
+    assert not assessment.accepted
+    assert assessment.reasons == ("nonfinite_angular_velocity",)
+
+
+def test_frame_faults_warn_from_first_frame_and_confirm_on_fifth():
+    observer = ImuFaultObserver(confirm_count=5)
+    for streak in range(1, 5):
+        assert observer.observe_frame(True) == (streak, False)
+    assert observer.observe_frame(False) == (0, False)
+    for streak in range(1, 5):
+        assert observer.observe_frame(True) == (streak, False)
+    assert observer.observe_frame(True) == (5, True)
+    assert observer.observe_frame(True) == (5, False)
+
+
+def test_receive_timeout_requires_five_separate_checks_and_resets_on_recovery():
+    observer = ImuFaultObserver(confirm_count=5)
+    assert observer.check_timeout(1.09, 1.0, 0.1, 0.02) is None
+    for streak, now in enumerate((1.101, 1.122, 1.143, 1.164, 1.185), 1):
+        age, observed, confirmed = observer.check_timeout(now, 1.0, 0.1, 0.02)
+        assert age >= 0.1
+        assert observed == streak
+        assert confirmed is (streak == 5)
+        assert observer.check_timeout(now + 0.001, 1.0, 0.1, 0.02) is None
+    assert observer.check_timeout(1.2, 1.19, 0.1, 0.02) is None
+    assert observer.check_timeout(1.291, 1.19, 0.1, 0.02)[1:] == (1, False)
+    observer.reset_timeout()
+    assert observer.check_timeout(1.312, 1.19, 0.1, 0.02)[1:] == (1, False)
 
 
 def orientation(roll_degrees):
@@ -131,6 +193,25 @@ def test_imu_evidence_preserves_nonfinite_invalid_input_without_invalid_json():
     assert frame["reason"] == "nonfinite_quaternion"
     assert frame["roll_pitch_deg"] is None
     assert frame["quat_xyzw"][:2] == ["nan", "inf"]
+
+
+def test_stamp_rejection_preserves_payload_validity_but_not_last_accepted_frame():
+    recorder = ImuFrameRecorder()
+    record_imu_evidence_frame(recorder, 1)
+    for sequence in range(2, 8):
+        recorder.record(
+            received_at=sequence * 0.01, frame_id="imu_link", stamp_ns=1,
+            stamp_status="stale", transport_age_ms=150.0,
+            valid=True, accepted=False, reason="stamp_stale",
+            quat_xyzw=(0.0, 0.0, 0.0, 1.0),
+            omega=(0.0, 0.0, 0.0), acceleration=(0.0, 0.0, 9.81),
+        )
+    evidence = json.loads(format_imu_evidence(
+        recorder.trigger("frame_fault_confirmed", at=0.08)
+    ))
+    assert evidence["frames"][-1]["payload_valid"] is True
+    assert evidence["frames"][-1]["accepted"] is False
+    assert evidence["last_valid_before_window"]["rx_seq"] == 1
 
 
 def test_imu_timeout_without_any_frame_reports_empty_history_then_recovery():

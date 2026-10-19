@@ -95,7 +95,7 @@ states:
       confirm_message: 所有电机进入零力矩模式，机器人将完全失去支撑能力，请确保机器人处于安全状态
   imu_protection:
     manifest:
-      label: IMU失联保护
+      label: IMU数据异常保护
       priority: 2000
       group: Safety
       icon: health_and_safety

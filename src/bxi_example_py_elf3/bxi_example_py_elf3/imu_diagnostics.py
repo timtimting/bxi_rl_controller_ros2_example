@@ -17,6 +17,7 @@ class ImuFrameRecord:
     stamp_status: str
     transport_age_ms: float | None
     valid: bool
+    accepted: bool
     reason: str | None
     quat_xyzw: tuple[float, float, float, float]
     omega: tuple[float, float, float]
@@ -58,8 +59,10 @@ class ImuFrameRecorder:
 
     def record(
         self, *, received_at, frame_id, stamp_ns, stamp_status, transport_age_ms,
-        valid, reason, quat_xyzw, omega, acceleration,
+        valid, reason, quat_xyzw, omega, acceleration, accepted=None,
     ) -> tuple[ImuEvidence, ...]:
+        if accepted is None:
+            accepted = valid
         self._sequence += 1
         frame = ImuFrameRecord(
             sequence=self._sequence,
@@ -69,13 +72,14 @@ class ImuFrameRecorder:
             stamp_status=stamp_status,
             transport_age_ms=transport_age_ms,
             valid=valid,
+            accepted=accepted,
             reason=reason,
             quat_xyzw=tuple(quat_xyzw),
             omega=tuple(omega),
             acceleration=tuple(acceleration),
         )
         self._recent.append(frame)
-        if valid:
+        if accepted:
             self._last_valid = frame
         completed = []
         pending = []
@@ -130,6 +134,7 @@ def format_imu_evidence(evidence: ImuEvidence) -> str:
             "stamp_status": frame.stamp_status,
             "transport_age_ms": number(frame.transport_age_ms, 1),
             "payload_valid": frame.valid,
+            "accepted": frame.accepted,
             "reason": frame.reason,
             "roll_pitch_deg": angles,
             "quat_xyzw": [number(v, 5) for v in frame.quat_xyzw],

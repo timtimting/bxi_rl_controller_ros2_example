@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 class ImuProtectionState(
     RobotControlState, EntryFrameProvider, RunningFrameProvider
 ):
-    """Hold the last joint pose with low stiffness after IMU loss."""
+    """Hold the last joint pose with low stiffness after confirmed IMU faults."""
 
     def __init__(self, name: str, state_id: int, kp: float, kd: float) -> None:
         super().__init__(name, state_id)
