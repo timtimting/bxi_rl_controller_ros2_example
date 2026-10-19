@@ -27,10 +27,13 @@ class RobotObservation:
     raw_cmd_vel: FloatArray
     linear_acceleration: FloatArray | None = None
     orientation_unsafe_confirmed: bool | None = None
+    inference_blocked: bool = False
 
 
 class ControlPlatformAdapter(Protocol):
     """Minimal platform boundary used by :class:`RobotControlRuntime`."""
+
+    safety_state_names: frozenset[str]
 
     def startup_step(self, now: float) -> bool:
         ...
@@ -40,7 +43,12 @@ class ControlPlatformAdapter(Protocol):
     ) -> tuple[RobotObservation, Sequence[str]]:
         ...
 
-    def publish_motor_frame(self, frame: MotorFrame) -> None:
+    def safety_motor_frame(
+        self, observation: RobotObservation, state_name: str
+    ) -> MotorFrame:
+        ...
+
+    def publish_motor_frame(self, frame: MotorFrame, *, safety: bool = False) -> None:
         ...
 
 

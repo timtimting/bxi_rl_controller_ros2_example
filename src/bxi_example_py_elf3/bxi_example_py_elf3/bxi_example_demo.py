@@ -59,6 +59,9 @@ from bxi_example_py_elf3.framework.platform.communication_trace import (
 )
 
 robot_name = "elf3"
+# Keep these transient guard gains aligned with imu_protection in mod.yaml.
+IMU_GUARD_KP = 20.0
+IMU_GUARD_KD = 1.0
 
 ELF3_RESET_JOINTS = JointLayout(
     (
@@ -113,6 +116,11 @@ ELF3_COMMAND_DEFAULTS = JointCommandDefaults(
 
 
 class BxiExample(Node):
+    safety_state_names = frozenset({
+        "com.bxi.basic_actions/zero_torque",
+        "com.bxi.basic_actions/imu_protection",
+    })
+
     def __init__(self, *, cpu_affinity_plan: CpuAffinityPlan):
         super().__init__("bxi_example_py")
 
@@ -144,6 +152,10 @@ class BxiExample(Node):
         self._imu_last_received_at = None
         self._imu_protection_latched = False
         self._imu_fall_protection_latched = False
+        self._imu_latest_frame_fault = False
+        self._imu_inference_paused = False
+        self._imu_guard_frame: MotorFrame | None = None
+        self._imu_guard_zero_torque = False
         self._next_imu_fall_request_warning = 0.0
         self._imu_first_received_logged = False
         self._imu_invalid_frame_count = 0
@@ -425,6 +437,13 @@ class BxiExample(Node):
         self._check_imu_runtime_safety()
         with self.lock_in:
             now = time.monotonic()
+            imu_block_reason = self._imu_block_reason_locked(now)
+            inference_blocked = imu_block_reason is not None
+            inference_pause_changed = inference_blocked != self._imu_inference_paused
+            self._imu_inference_paused = inference_blocked
+            if not inference_blocked:
+                self._imu_guard_frame = None
+                self._imu_guard_zero_torque = False
             remote_expired = self._remote_input.expire(now)
             command_age = self._remote_input.snapshot(now)["receive_age_ms"]
             upstream_unsafe = self._remote_path.input_unsafe(now, command_age)
@@ -456,16 +475,27 @@ class BxiExample(Node):
             self._observation.orientation_unsafe_confirmed = (
                 self._imu_fall_observer.snapshot_confirmed()
             )
+            self._observation.inference_blocked = inference_blocked
             np.copyto(self._quat_wxyz_snapshot, self.quat_wxyz)
             np.copyto(self._omega_snapshot, self.omega)
             np.copyto(self._linear_acceleration_snapshot, self.linear_acceleration)
             np.copyto(self._cmd_snapshot, self.raw_cmd_vel)
             events = (
                 ()
-                if self._imu_protection_latched or self._imu_fall_protection_latched
+                if inference_blocked
+                or self._imu_protection_latched
+                or self._imu_fall_protection_latched
                 else tuple(self.pending_remote_events)
             )
             self.pending_remote_events.clear()
+        if inference_pause_changed:
+            if inference_blocked:
+                self.get_logger().warning(
+                    f"IMU inference paused: reason={imu_block_reason}; "
+                    "publishing a guarded motor frame"
+                )
+            else:
+                self.get_logger().info("IMU inference resumed after valid data")
         if remote_expired:
             self.get_logger().warning(
                 "remote input timeout: no valid motion_commands for "
@@ -474,6 +504,48 @@ class BxiExample(Node):
             )
         assert self._observation is not None
         return self._observation, events
+
+    def _imu_block_reason_locked(self, now: float) -> str | None:
+        if not self.imu_required:
+            return None
+        if self._imu_fall_protection_latched:
+            return "fall_protection"
+        if self._imu_protection_latched:
+            return "data_protection"
+        if self._imu_latest_frame_fault:
+            return "invalid_frame"
+        if self._imu_fall_observer.consecutive > 0:
+            return "orientation_limit"
+        if self._imu_last_received_at is None:
+            return "missing_frame"
+        if now - self._imu_last_received_at >= self.imu_runtime_timeout_sec:
+            return "receive_timeout"
+        return None
+
+    def _imu_guard_frame_locked(self, joints, state_name: str) -> MotorFrame:
+        frame = self._imu_guard_frame
+        if frame is None or frame.layout.names != joints.layout.names:
+            frame = MotorFrame.empty(joints.layout)
+            np.copyto(frame.qpos, joints.position, casting="same_kind")
+            self._imu_guard_frame = frame
+            self._imu_guard_zero_torque = False
+        self._imu_guard_zero_torque |= (
+            self._imu_fall_protection_latched
+            or state_name == "com.bxi.basic_actions/zero_torque"
+        )
+        if self._imu_guard_zero_torque:
+            frame.kp.fill(0.0)
+            frame.kd.fill(0.0)
+        else:
+            frame.kp.fill(IMU_GUARD_KP)
+            frame.kd.fill(IMU_GUARD_KD)
+        return frame
+
+    def safety_motor_frame(
+        self, observation: RobotObservation, state_name: str
+    ) -> MotorFrame:
+        with self.lock_in:
+            return self._imu_guard_frame_locked(observation.joints, state_name)
 
     def _check_imu_runtime_safety(self):
         if not self.imu_required:
@@ -584,11 +656,21 @@ class BxiExample(Node):
             force=True,
         )
 
-    def publish_motor_frame(self, frame: MotorFrame):
+    def publish_motor_frame(self, frame: MotorFrame, *, safety: bool = False):
         """Convert a framework motor frame into the ELF3 ROS command message."""
         state_name = self.runtime.framework.current_state_name
-        override_permitted = self.motor_override_allow_in_zero_torque or (
-            state_name != "com.bxi.basic_actions/zero_torque"
+        with self.lock_in:
+            if self._imu_block_reason_locked(time.monotonic()) is not None:
+                frame = self._imu_guard_frame_locked(
+                    self._joint_source.view, state_name
+                )
+                safety = True
+        if safety:
+            self._motor_override.clear()
+            self._motor_override_last_names = ()
+        override_permitted = not safety and (
+            self.motor_override_allow_in_zero_torque
+            or state_name != "com.bxi.basic_actions/zero_torque"
         )
         frame = self._motor_override.apply(
             frame,
@@ -877,6 +959,7 @@ class BxiExample(Node):
 
         with self.lock_in:
             waiting_for_joints = not self._joint_received
+            imu_blocked = self._imu_block_reason_locked(time.monotonic()) is not None
             warn_waiting = (
                 waiting_for_joints
                 and not self._motor_override_waiting_for_joints_warned
@@ -885,6 +968,11 @@ class BxiExample(Node):
                 self._motor_override_waiting_for_joints_warned = True
             if not waiting_for_joints:
                 robot_layout = self._joint_source.view.layout
+        if imu_blocked:
+            self._motor_override.clear()
+            self._motor_override_last_names = ()
+            self._warn_motor_override("IMU data unsafe; override ignored")
+            return
         if waiting_for_joints:
             if warn_waiting:
                 self.get_logger().warning(
@@ -965,6 +1053,7 @@ class BxiExample(Node):
             already_protected = (
                 self._imu_protection_latched or self._imu_fall_protection_latched
             )
+            self._imu_latest_frame_fault = bool(reasons)
             streak, frame_fault_confirmed = self._imu_fault_observer.observe_frame(
                 bool(reasons)
             )

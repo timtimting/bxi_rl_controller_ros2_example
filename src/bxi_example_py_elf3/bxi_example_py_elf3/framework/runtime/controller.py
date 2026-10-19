@@ -255,6 +255,26 @@ class RobotControlFramework:
         self.loop_count += 1
         return frame
 
+    def observe_without_inference(
+        self, observation: RobotObservation, *, safe_state_names: frozenset[str]
+    ) -> None:
+        """Refresh joint context and safety requests without advancing any state."""
+        if self._closed:
+            raise RuntimeError("RobotControlFramework is closed")
+        self._set_observation(observation)
+        # A queued mode change could preheat a model even without state updates.
+        pending = tuple(self._pending_state_requests)
+        self._pending_state_requests.clear()
+        for state_name, trigger, transition, delay, force in pending:
+            if force and state_name in safe_state_names:
+                self.state_machine.request_transition(
+                    state_name, trigger=trigger, transition=transition,
+                    delay=delay, force=force,
+                )
+        self.current_cmd_vel.fill(0.0)
+        self._motor_target = None
+        self.loop_count += 1
+
     def maintenance_update(self) -> None:
         """Run non-control Mod supervision outside the control data path."""
         if self._closed:

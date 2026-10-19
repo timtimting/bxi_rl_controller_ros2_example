@@ -407,11 +407,23 @@ class RobotControlRuntime:
                 trace.enter("state_update")
             framework_acquired_ns = time.monotonic_ns()
             cycle_period_sec = self.scheduler.period_sec
-            frame = self.framework.update(
-                observation,
-                events,
-                cycle_period_sec,
-            )
+            if observation.inference_blocked:
+                self.framework.observe_without_inference(
+                    observation, safe_state_names=self._platform.safety_state_names
+                )
+                frame = self._platform.safety_motor_frame(
+                    observation, self.framework.current_state_name
+                )
+                self.framework.last_motor_frame.update(
+                    frame.qpos, frame.kp, frame.kd,
+                    vel=frame.vel, torque=frame.torque,
+                )
+            else:
+                frame = self.framework.update(
+                    observation,
+                    events,
+                    cycle_period_sec,
+                )
             state_name = self.framework.current_state_name
             next_period_sec = self.framework.desired_control_period
         framework_finished_ns = time.monotonic_ns()
@@ -419,7 +431,10 @@ class RobotControlRuntime:
         if trace is not None:
             trace.enter("command_publish")
         if frame is not None:
-            self._platform.publish_motor_frame(frame)
+            if observation.inference_blocked:
+                self._platform.publish_motor_frame(frame, safety=True)
+            else:
+                self._platform.publish_motor_frame(frame)
         publish_finished_ns = time.monotonic_ns()
         self._last_cycle_phases_ns = (
             snapshot_finished_ns - snapshot_started_ns,
