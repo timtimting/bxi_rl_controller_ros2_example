@@ -108,7 +108,11 @@ install(DIRECTORY launch
 install(DIRECTORY config
          DESTINATION share/${PROJECT_NAME})
 
-install(PROGRAMS scripts/start_imu_if_owned.sh scripts/start_elf_logged.sh scripts/elf_log_split.py
+install(PROGRAMS
+        scripts/start_imu_if_owned.sh
+        scripts/start_elf_logged.sh
+        scripts/elf_log_split.py
+        scripts/view_elf_log.py
         DESTINATION share/${PROJECT_NAME}/scripts)
 
 ament_export_include_directories(include)

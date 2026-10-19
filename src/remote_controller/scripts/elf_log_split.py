@@ -2,15 +2,18 @@
 """Keep the ELF launch log readable while retaining full trace evidence."""
 
 import json
+import re
 import sys
 import time
 from pathlib import Path
 
 
 MARKER = "communication_trace {"
+ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
 def route_line(line, main_log, trace_log, trace_name, hardware_summary):
+    line = ANSI_ESCAPE.sub("", line)
     prefix, marker, payload = line.partition(MARKER)
     if not marker:
         main_log.write(line)

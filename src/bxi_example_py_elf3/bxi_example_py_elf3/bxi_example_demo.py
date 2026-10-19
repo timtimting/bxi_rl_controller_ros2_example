@@ -414,7 +414,7 @@ class BxiExample(Node):
             return False
         if self.step == 0:
             if self.robot_reset(1, False):
-                self.get_logger().info("robot reset step 1 requested")
+                self.get_logger().debug("robot reset step 1 requested")
                 self._second_reset_at = now + 1.0
                 self.step = 1
             return False
@@ -423,7 +423,7 @@ class BxiExample(Node):
                 return False
             if not self.robot_reset(2, True):
                 return False
-            self.get_logger().info("robot reset step 2 requested")
+            self.get_logger().debug("robot reset step 2 requested")
             self.step = 2
             if self.topic_prefix.find("simulation") != -1:
                 self.runtime.request_state(

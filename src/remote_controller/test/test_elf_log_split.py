@@ -18,10 +18,10 @@ def test_full_trace_is_kept_out_of_main_log(tmp_path):
     controller = {"event": "stall", "diagnostic_id": 7, "stalled_streams": ["joint_rx"]}
     lines = [
         "[INFO] booted\n",
-        "[hardware] communication_trace " + json.dumps(hardware) + "\n",
+        "\033[36m[hardware]\033[0m communication_trace " + json.dumps(hardware) + "\n",
         "[hardware] communication_trace " + json.dumps(hardware) + "\n",
         "[demo] communication_trace " + json.dumps(controller) + "\n",
-        "[WARN] communication summary #7\n",
+        "\033[33m[WARN] communication summary #7\033[0m\n",
     ]
     subprocess.run([sys.executable, str(SCRIPT), str(main), str(trace)],
                    input="".join(lines), text=True, check=True)
@@ -29,6 +29,7 @@ def test_full_trace_is_kept_out_of_main_log(tmp_path):
     trace_text = trace.read_text()
     assert "[INFO] booted" in main_text
     assert "[WARN] communication summary #7" in main_text
+    assert "\033[" not in main_text + trace_text
     assert "hardware_trace event=stall" in main_text
     assert main_text.count("hardware_trace event=stall") == 1
     assert '"stalled_streams"' not in main_text
@@ -49,7 +50,7 @@ def test_launcher_creates_matching_main_and_trace_files(tmp_path):
     fake_ros2 = tmp_path / "ros2"
     fake_ros2.write_text(
         "#!/bin/sh\n"
-        "printf '[INFO] robot started\\n'\n"
+        "printf '[INFO] robot started, color=%s\\n' \"$RCUTILS_COLORIZED_OUTPUT\"\n"
         "printf '[demo] communication_trace {\"event\":\"started\"}\\n'\n"
     )
     fake_ros2.chmod(0o755)
@@ -61,5 +62,6 @@ def test_launcher_creates_matching_main_and_trace_files(tmp_path):
     trace_logs = list((log_root / "trace").glob("*_elf.trace.log"))
     assert len(main_logs) == len(trace_logs) == 1
     assert "robot started" in main_logs[0].read_text()
+    assert "color=0" in main_logs[0].read_text()
     assert "communication_trace" not in main_logs[0].read_text().splitlines()[-1]
     assert '"event":"started"' in trace_logs[0].read_text()

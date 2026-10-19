@@ -455,7 +455,9 @@ class RobotControlRuntime:
                 self.cpu_affinity_plan.roles[CpuAffinityRole.BACKGROUND],
                 realtime_priority=0,
             )
-            self._log("info", "maintenance thread: CPU=" + format_cpu_set(os.sched_getaffinity(0)))
+            self._log(
+                "debug", "maintenance thread: CPU=" + format_cpu_set(os.sched_getaffinity(0))
+            )
         except (AttributeError, OSError) as exc:
             self._log("warning", f"cannot configure maintenance thread CPU affinity: {exc}")
         period_sec = 1.0 / self.config.maintenance_hz
@@ -706,8 +708,10 @@ class RobotControlRuntime:
         logger = self._logger
         try:
             # rclpy binds severity to the Python source location of a log call.
-            # Keep each severity on a distinct call line instead of using one
-            # dynamic getattr call for INFO, WARNING and ERROR.
+            # Keep each severity on a distinct call line instead of using dynamic getattr.
+            if level == "debug":
+                logger.debug(message)
+                return True
             if level == "info":
                 logger.info(message)
                 return True

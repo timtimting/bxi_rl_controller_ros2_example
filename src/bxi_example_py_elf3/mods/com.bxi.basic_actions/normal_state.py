@@ -48,7 +48,7 @@ class NormalState(RobotControlState, EntryFrameProvider, RunningFrameProvider):
             self._cmd_vel_callback,
             QoSProfile(depth=1),
         )
-        self.logger.info(
+        self.logger.debug(
             f"normal state navigation input: {self._CMD_VEL_TOPIC}"
         )
 

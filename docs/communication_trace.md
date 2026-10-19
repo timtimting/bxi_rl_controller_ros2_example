@@ -66,6 +66,19 @@ ros2 launch bxi_example_py_elf3 example_demo_hw.launch.py enable_imu:=false \
 - `/var/log/bxi_log/<时间>_elf.log`：主日志，保留原始普通日志、短摘要和异常。
 - `/var/log/bxi_log/trace/<时间>_elf.trace.log`：硬件端完整 `communication_trace` JSON。
 
+实时查看最新主日志可使用安装后的彩色终端查看器：
+
+```bash
+"$(ros2 pkg prefix remote_controller)/share/remote_controller/scripts/view_elf_log.py"
+```
+
+它按日志等级及状态切换、遥控、IMU、硬件通信标记着色，`Ctrl+C` 退出；
+服务重启产生新日志文件后重新运行即可切到新文件。
+`--once` 只显示最近 80 行，`--color never` 禁用颜色。颜色只作用于终端，
+`start_elf_logged.sh` 写入的日志保持纯文本。直接在终端运行 `ros2 launch` 时，
+可在命令前设置 `RCUTILS_COLORIZED_OUTPUT=1` 启用 ROS 2 自带的等级颜色；
+不要给写文件的自启动服务全局设置该变量。
+
 控制端的完整 JSON 始终另存于启动日志打印的 `bxi_communication_trace_*.jsonl`。
 
 硬件端重复相同的 trace 告警在主日志每5秒最多一行，完整内容仍逐条保留在 trace 文件。

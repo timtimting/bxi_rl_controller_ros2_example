@@ -169,7 +169,7 @@ CameraManager::CameraManager(const rclcpp::NodeOptions &options)
         std::bind(&CameraManager::on_parameters, this, std::placeholders::_1));
     timer_ = create_wall_timer(std::chrono::milliseconds(100),
                                std::bind(&CameraManager::reconcile, this));
-    RCLCPP_INFO(
+    RCLCPP_DEBUG(
         get_logger(),
         "camera SDK providers: RealSense:librealsense2, Orbbec:OrbbecSDK_v2 2.9.3");
 }
