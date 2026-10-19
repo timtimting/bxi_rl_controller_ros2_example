@@ -73,3 +73,14 @@ def test_idle_event_sources_and_on_change_publishers_are_not_usb_faults():
     empty = RemotePathMonitor(0)
     assert empty.status(1, None) == "waiting_status"
     assert empty.status(4, None) == "status_unavailable"
+
+
+def test_missing_freshness_status_warns_once_without_placeholder_fields():
+    monitor = RemotePathMonitor(0)
+    severity, text = monitor.report(4, 400)
+    assert severity == "warning"
+    assert text == (
+        "remote_path status=status_unavailable; "
+        "no remote_controller/freshness data received"
+    )
+    assert monitor.report(10, 10000) is None

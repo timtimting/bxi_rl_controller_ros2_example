@@ -99,18 +99,26 @@ class RemotePathMonitor:
         status = self.status(now, command_age_ms)
         healthy = status in ("fresh", "event_source_unverified", "waiting_status", "on_change_idle_or_fresh")
         key = (status, (self.sample or {}).get("source"), (self.sample or {}).get("io_kind"))
-        if key == self.last_reported and (healthy or now < self.next_report):
+        if key == self.last_reported and (
+            healthy or status == "status_unavailable" or now < self.next_report
+        ):
             return None
         self.last_reported, self.next_report = key, now + self.summary_sec
         s = self.sample or {}
         severity = "info" if healthy else "warning"
-        text = (
-            f"remote_path status={status} source={s.get('source', '--')} "
-            f"io_kind={s.get('io_kind', '--')} usb_age_ms={s.get('usb_read_age_ms', '--')} "
-            f"valid_age_ms={s.get('valid_frame_age_ms', '--')} "
-            f"publish_age_ms={s.get('publish_age_ms', '--')} "
-            f"last_stop={s.get('last_stop_status', '--')} demo_age_ms={command_age_ms} seq={s.get('sample_seq', '--')} hz={s.get('sample_hz', '--')}"
-        )
+        if not s:
+            text = f"remote_path status={status}; no remote_controller/freshness data received"
+        else:
+            text = (
+                f"remote_path status={status} source={s['source']} device={s['device']} "
+                f"io={s.get('io_kind', '--')} "
+                f"usb_age_ms={s['usb_read_age_ms']:.0f} "
+                f"valid_age_ms={s['valid_frame_age_ms']:.0f} "
+                f"publish_age_ms={s['publish_age_ms']:.0f} "
+                f"demo_age_ms={command_age_ms if command_age_ms is not None else '--'}"
+            )
+            if s.get("last_stop_status"):
+                text += f" last_stop={s['last_stop_status']}"
         if self.invalid:
             text += f" reason={self.invalid}"
         return severity, text

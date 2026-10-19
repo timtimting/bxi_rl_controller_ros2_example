@@ -17,6 +17,7 @@ from threading import Event, Thread, get_ident, get_native_id
 import time
 
 from rclpy.executors import MultiThreadedExecutor
+from rclpy.logging import get_logging_directory
 from .cpu_affinity import configure_current_thread
 
 
@@ -33,10 +34,16 @@ class StreamSample:
 class CommunicationTrace:
     """One writer per stream/lane; immutable snapshots exchanged under the GIL."""
 
-    def __init__(self, timeout_sec=0.2, summary_interval_sec=5.0):
+    detail_limit_bytes = 16 * 1024 * 1024
+
+    def __init__(self, timeout_sec=0.2, summary_interval_sec=5.0,
+                 remote_timeout_sec=0.3):
         self.timeout_ns = int(timeout_sec * 1e9)
         if self.timeout_ns <= 0:
             raise ValueError("communication trace timeout must be positive")
+        self.remote_timeout_ns = int(remote_timeout_sec * 1e9)
+        if self.remote_timeout_ns <= 0:
+            raise ValueError("remote trace timeout must be positive")
         self.summary_interval_ns = int(summary_interval_sec * 1e9)
         if self.summary_interval_ns <= 0:
             raise ValueError("communication summary interval must be positive")
@@ -60,6 +67,11 @@ class CommunicationTrace:
         self._summary_context = None
         self._last_ros_context = {}
         self._cpu_affinity = None
+        self._detail_file = None
+        self._detail_path = None
+        self._remote_episode_active = False
+        self._remote_last_bad_ns = 0
+        self._remote_last_report_ns = 0
         self._identity = {"pid": os.getpid(), "host": socket.gethostname(),
                           "architecture": platform.machine()}
         try:
@@ -112,6 +124,18 @@ class CommunicationTrace:
         self._log, self._context = log, context
         self._summary_context = summary_context
         self._cpu_affinity = cpu_affinity
+        try:
+            directory = get_logging_directory()
+            os.makedirs(directory, exist_ok=True)
+            self._detail_path = os.path.join(
+                directory, f"bxi_communication_trace_{os.getpid()}_{time.time_ns()}.jsonl"
+            )
+            self._detail_file = open(self._detail_path, "x", encoding="utf-8", buffering=1)
+            self._log("info", f"communication trace details: {self._detail_path}")
+        except (OSError, RuntimeError) as exc:
+            self._detail_file = None
+            self._detail_path = None
+            self._log("warning", f"communication trace file unavailable: {exc}; details will use ROS log")
         self._stop.clear()
         self._thread = Thread(target=self._run, name="bxi-communication-watchdog", daemon=True)
         self._thread.start()
@@ -122,6 +146,9 @@ class CommunicationTrace:
         if thread is not None:
             thread.join(timeout=1.0)
         self._thread = None
+        if self._detail_file is not None and (thread is None or not thread.is_alive()):
+            self._detail_file.close()
+            self._detail_file = None
 
     def _run(self):
         if self._cpu_affinity is not None:
@@ -182,7 +209,9 @@ class CommunicationTrace:
         }
         # A stream arms on its first sample. Command publishing arms the control
         # lane, so ordinary startup/service waits do not look like walking stalls.
-        stalled = [name for name, s in streams.items() if now - s.mono_ns > self.timeout_ns]
+        stalled = [name for name, s in streams.items()
+                   if now - s.mono_ns > (self.remote_timeout_ns if name == "remote_rx"
+                                         else self.timeout_ns)]
         blocked = [name for name, a in active.items()
                    if now - a[1] > self.timeout_ns and
                    (name != "control" or "command_tx" in streams)]
@@ -192,6 +221,37 @@ class CommunicationTrace:
             "control": active_details.get("control"),
         })
         faulty = bool(stalled or blocked)
+        remote_problem = "remote_rx" in stalled or any(
+            i.get("stream") == "remote_rx" for i in self._pending
+        )
+        other_problem = bool(
+            blocked or any(name != "remote_rx" for name in stalled)
+            or any(i.get("stream") not in ("remote_rx",) for i in self._pending)
+        )
+        if self._remote_episode_active and not other_problem:
+            if remote_problem:
+                self._remote_last_bad_ns = now
+                if now - self._remote_last_report_ns >= self.summary_interval_ns:
+                    self._write_summary("stall" if faulty else "incident", now,
+                                        streams, active, stalled, blocked, False)
+                    self._remote_last_report_ns = now
+                self._pending.clear()
+                return
+            if now - self._remote_last_bad_ns < self.summary_interval_ns:
+                self._pending.clear()
+                return
+            self._write_summary("recovered", now, streams, active, stalled, blocked, False)
+            self._remote_episode_active = False
+            self._reported_conditions.clear()
+            self._reported_incidents.clear()
+            self._last_fault = False
+            self._last_conditions = frozenset()
+            self._pending.clear()
+            return
+        if self._remote_episode_active and other_problem:
+            self._remote_episode_active = False
+            self._last_fault = False
+            self._last_conditions = frozenset()
         if not faulty and not self._pending and not self._last_fault:
             return
         conditions = frozenset(
@@ -253,6 +313,12 @@ class CommunicationTrace:
         self._pending.clear()
         self._last_summary_ns, self._last_fault = now, faulty
         self._last_conditions = conditions
+        if remote_problem and not other_problem:
+            self._remote_episode_active = True
+            self._remote_last_bad_ns = now
+            self._remote_last_report_ns = now
+        elif other_problem:
+            self._remote_episode_active = False
         if recovering:
             self._reported_conditions.clear()
 
@@ -295,20 +361,21 @@ class CommunicationTrace:
             value = max((i.get("gap_ms", i.get("delta_ms", i.get("value", 0)))
                          for i in items), key=abs)
             incident_notes.append(f"{labels.get(stream, stream)}:{kind}={value:.1f}ms")
-            if kind == "stream_gap":
-                worst = max(items, key=lambda i: i["gap_ms"])
-                incident_notes.append(f"stamp_ns={worst['previous_stamp_ns']}→{worst['stamp_ns']}")
-        fields = [f"{title}[诊断#{self._diagnostic_id}]：" + ("，".join(problems) or "当前无停更/阻塞"),
-                  "近期更新频率：" + "/".join(rates), f"控制={control_stage}",
-                  f"状态={str(context.get('state', '未知')).rsplit('/', 1)[-1]}"]
+        fields = [f"{title}#{self._diagnostic_id}: " + (", ".join(problems) or "已恢复"),
+                  f"状态={str(context.get('state', '未知')).rsplit('/', 1)[-1]}",
+                  "频率 " + ", ".join(rates)]
+        if blocked:
+            fields.append(f"控制={control_stage}")
         if "remote_input_fresh" in context:
             fields.append("遥控有效=" + ("是" if context["remote_input_fresh"] else "否"))
-        if "remote_path_status" in context:
+        if "remote_path_status" in context and context["remote_path_status"] not in (
+            "waiting_status", "status_unavailable"
+        ):
             fields.append("遥控源=" + str(context["remote_path_status"]))
         if incident_notes:
             fields.append("事件=" + ",".join(incident_notes))
         if detail:
-            fields.append(f"完整诊断见 communication_trace 的 diagnostic_id={self._diagnostic_id}")
+            fields.append(f"详情#{self._diagnostic_id}")
         self._log("info" if event == "recovered" else "warning", "；".join(fields))
 
     def _emit(self, severity, report):
@@ -320,9 +387,26 @@ class CommunicationTrace:
                 self._last_ros_context = report["ros"]
             except Exception as exc:
                 report["ros"] = {"query_error": str(exc)}
-        self._log(severity, "communication_trace " + json.dumps(
+        line = "communication_trace " + json.dumps(
             {**self._identity, **report}, ensure_ascii=False, separators=(",", ":")
-        ))
+        )
+        if self._detail_file is not None:
+            try:
+                if (os.fstat(self._detail_file.fileno()).st_size + len(line.encode("utf-8")) + 1
+                        > self.detail_limit_bytes):
+                    self._detail_file.close()
+                    os.replace(self._detail_path, self._detail_path + ".1")
+                    self._detail_file = open(
+                        self._detail_path, "w", encoding="utf-8", buffering=1
+                    )
+                self._detail_file.write(line + "\n")
+                return
+            except OSError as exc:
+                if self._detail_file is not None and not self._detail_file.closed:
+                    self._detail_file.close()
+                self._detail_file = None
+                self._log("warning", f"communication trace file write failed: {exc}; details will use ROS log")
+        self._log(severity, line)
 
 
 class CommunicationExecutor(MultiThreadedExecutor):

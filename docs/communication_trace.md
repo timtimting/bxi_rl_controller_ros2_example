@@ -5,22 +5,25 @@
 
 ## 启用与部署
 
-控制节点默认启用，无需独立诊断脚本。监测线程每 50 ms 检查一次，已开始收发的数据流
-超过 200 ms 未更新时输出告警。正常工作时只输出启动信息，尚未收到第一帧的数据流不会报停更。
+控制节点默认启用，无需独立诊断脚本。监测线程每 50 ms 检查一次。已开始收发的
+电机命令、关节反馈和 IMU 超过 200 ms 未更新会告警；遥控输入阈值与控制端的
+`remote_timeout_sec` 相同，默认 300 ms。尚未收到第一帧的数据流不会报停更。
 
 控制端输出按异常变化收敛：
 
-- 首次异常输出一行中文摘要及一份完整 `communication_trace` JSON，使用 `diagnostic_id` 关联。
+- 首次异常在主日志输出一行短摘要，完整 `communication_trace` JSON 按 `diagnostic_id`
+  写入启动时打印的 `bxi_communication_trace_<pid>_<时间>.jsonl`。
 - 同一异常持续时，每 5 秒只输出一行摘要，不重复端点/QoS、压力、线程栈和历史计数。
+  遥控输入反复短时停更也合并为一轮；连续 5 秒稳定后才提示恢复。
   此时不再查询 ROS 图；重复的同类时间戳异常也会合并。
 - 新增停更数据流、阻塞阶段或异常类型时，立即保留新的完整现场，不等待 5 秒。
-- 异常范围缩小或接收/发布恢复时立即提示；已记录停更的恢复间隔只保留简要事件和旧、新时间戳。
+- 非遥控停更恢复时立即提示；原始旧、新时间戳保留在 JSON 中，主日志不再重复长数字。
   完全恢复后，再次停更仍会输出新的完整诊断。
 
 例如，只有遥控输入停止更新时，持续告警类似：
 
 ```text
-[WARN] [fw.runtime]: 通信告警[诊断#1]：遥控输入停更6.49s；近期更新频率：电机命令=50.0Hz/关节反馈=883.0Hz/IMU=475.0Hz/遥控输入=0.0Hz；控制=等待下周期；状态=zero_torque；遥控有效=否
+[WARN] [fw.runtime]: 通信告警#1: 遥控输入停更6.49s；状态=zero_torque；频率 电机命令=50.0Hz, 关节反馈=883.0Hz, IMU=475.0Hz, 遥控输入=0.0Hz；遥控有效=否
 ```
 
 频率根据最近约 500 ms 的计数估算，启动时窗口可能更短；`--` 表示尚未观测。
@@ -28,6 +31,8 @@
 如果遥控发布端按变化发送，也可能出现这种记录；不能仅凭它认定 ROS 故障。
 主日志精简不改变原有 300 ms 命令接收超时；新增的源端过期门控见下文。
 硬件端原有日志策略不受此修改影响。
+控制端 JSON 文件位于 `rclpy.logging.get_logging_directory()` 返回的 ROS 日志目录，
+每个文件限制为 16 MiB，轮转备份为同名 `.1`。目录不可写时退回 ROS 日志中的完整 JSON。
 
 硬件端需要同时安装对应修改。补丁 [communication_trace_hardware.patch](communication_trace_hardware.patch)
 基于 `bxi_ros2_pkg_src` 提交 `74a2a92`，涉及 `hardware_elf3` 的两个既有文件及一个新增头文件。
@@ -47,8 +52,8 @@ CANFD 消息；编译当前硬件源码需要源码版本的接口包，不能�
 `/opt/bxi` 的旧包。用 `ros2 pkg prefix hardware_elf3` 核对实际选择的位置。
 编译源文件不会自动替换 `/opt/bxi` 中正在使用的二进制。
 
-启动日志应同时看到控制节点和硬件节点的 `communication_trace` / `"event":"started"`；
-只有控制端启动记录，说明硬件端证据尚未启用。原来的启动命令无需增加其他进程：
+控制端启动时应看到 `communication trace details: ...jsonl`，硬件端仍输出
+`communication_trace` / `"event":"started"`。原来的启动命令无需增加其他进程：
 
 ```bash
 ros2 launch bxi_example_py_elf3 example_demo_hw.launch.py enable_imu:=false \
@@ -59,7 +64,9 @@ ros2 launch bxi_example_py_elf3 example_demo_hw.launch.py enable_imu:=false \
 改由 `start_elf_logged.sh` 把输出分成同一时间戳的两份：
 
 - `/var/log/bxi_log/<时间>_elf.log`：主日志，保留原始普通日志、短摘要和异常。
-- `/var/log/bxi_log/trace/<时间>_elf.trace.log`：控制端与硬件端完整 `communication_trace` JSON。
+- `/var/log/bxi_log/trace/<时间>_elf.trace.log`：硬件端完整 `communication_trace` JSON。
+
+控制端的完整 JSON 始终另存于启动日志打印的 `bxi_communication_trace_*.jsonl`。
 
 硬件端重复相同的 trace 告警在主日志每5秒最多一行，完整内容仍逐条保留在 trace 文件。
 日志目录不可写时输出回退到启动进程的 journal，避免因分流器退出造成 ROS stdout 堵塞。
@@ -136,7 +143,7 @@ ros2 launch bxi_example_py_elf3 example_demo_hw.launch.py enable_imu:=false \
 `remote_controller` 现在发布低频 `remote_controller/freshness`，demo 的 `remote_path` 诊断
 将 USB 字节读取、有效协议帧、命令发布、有效命令接收分开观察。源端确认超时后清空输入并发零命令；
 demo 收到明确的源端故障时也会丢弃待处理输入。它与上面的执行器/控制线程
-记录互补。重复异常每5秒一行，正常不逐帧打印；USB 协议没有源时间戳时
+记录互补。重复源端异常每5秒一行；完全没有新诊断话题时只警告一次，正常不逐帧打印；USB 协议没有源时间戳时
 明确标为仅能观测主机到达时间。CRSF 坏 CRC 不会刷新有效帧时间；同值但真实到达的新帧
 会推进序号。普通 joystick 无事件不等于 USB 断链，只有匹配 hidraw 且已确认周期报告时
 才启用周期源过期判断。字段、状态解释和可选配置见 `src/remote_controller/README.md`。

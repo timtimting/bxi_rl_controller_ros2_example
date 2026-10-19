@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 from threading import Event, Thread
 from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
@@ -77,7 +78,8 @@ def test_inflight_stall_is_visible_before_control_returns_and_then_recovers(reco
     severity, text = summaries(trace)[-1]
     assert severity == "info"
     assert "恢复" in text
-    assert "stamp_ns=42→43" in text
+    assert "stream_gap=250.0ms" in text
+    assert "stamp_ns=42" not in text
 
 
 def test_transient_gap_retains_old_and_new_command_stamps(recorder):
@@ -168,7 +170,7 @@ def test_idle_remote_repeats_short_summary_without_requerying_graph(recorder):
     assert len(summaries(trace)) == 2  # First warning, then five seconds later.
     trace._context.assert_called_once()
     text = summaries(trace)[-1][1]
-    assert "遥控输入停更5.22s" in text
+    assert "遥控输入停更5.32s" in text
     assert "电机命令=50.0Hz" in text
     assert "关节反馈=900.0Hz" in text
     assert "IMU=500.0Hz" in text
@@ -186,6 +188,7 @@ def test_new_control_stall_bypasses_remote_summary_throttle(recorder):
         trace.enter("waiting_next_cycle")
         trace.poll()
         advance(clock, 50_000_000)
+    trace.poll()
     assert len(reports(trace)) == 1
     trace.record("command_tx")
     trace.enter("framework_lock")
@@ -207,19 +210,79 @@ def test_new_control_stall_bypasses_remote_summary_throttle(recorder):
 def test_recovery_rearms_detail_for_next_outage(recorder):
     trace, clock = recorder
     trace.record("remote_rx", stamp_ns=1)
-    for _ in range(7):
+    for _ in range(8):
         trace.poll()
         advance(clock, 50_000_000)
     trace.record("remote_rx", stamp_ns=2)
     trace.poll()
     assert len(reports(trace)) == 1
+    for i in range(101):
+        advance(clock, 50_000_000)
+        trace.record("remote_rx", stamp_ns=i + 3)
+        trace.poll()
     severity, text = summaries(trace)[-1]
     assert severity == "info" and "恢复" in text
-    assert "stamp_ns=1→2" in text
-    for _ in range(7):
+    assert "stamp_ns=" not in text
+    for _ in range(8):
         advance(clock, 50_000_000)
         trace.poll()
     assert len(reports(trace)) == 2
+
+
+def test_remote_flapping_has_one_warning_per_summary_interval(recorder):
+    trace, clock = recorder
+    trace.record("remote_rx", stamp_ns=1)
+    for i in range(30):
+        for _ in range(7):
+            advance(clock, 50_000_000)
+            trace.poll()
+        trace.record("remote_rx", stamp_ns=i + 2)
+        trace.poll()
+    assert len(reports(trace)) == 1
+    assert len([s for s in summaries(trace) if s[0] == "warning"]) <= 3
+    assert not any(s[0] == "info" for s in summaries(trace))
+
+
+def test_new_system_incident_is_not_hidden_by_remote_flapping(recorder):
+    trace, clock = recorder
+    trace.record("remote_rx")
+    advance(clock, 350_000_000)
+    trace.poll()
+    trace.record("remote_rx")
+    trace.poll()
+    advance(clock, 50_000_000)
+    clock[1] += 2_000_000_000
+    trace.poll()
+    assert report(trace)["event"] == "incident"
+    assert any(i["kind"] == "wall_clock_jump" for i in report(trace)["incidents"])
+
+
+def test_trace_file_rotates_without_printing_json(recorder, tmp_path):
+    trace, _ = recorder
+    trace._detail_path = str(tmp_path / "trace.jsonl")
+    trace._detail_file = open(trace._detail_path, "w", encoding="utf-8", buffering=1)
+    trace.detail_limit_bytes = 500
+    try:
+        trace._emit("warning", {"event": "first", "payload": "a" * 250})
+        trace._emit("warning", {"event": "second", "payload": "b" * 250})
+    finally:
+        trace._detail_file.close()
+    assert (tmp_path / "trace.jsonl.1").exists()
+    assert '"event":"first"' in (tmp_path / "trace.jsonl.1").read_text()
+    assert '"event":"second"' in (tmp_path / "trace.jsonl").read_text()
+    trace._log.assert_not_called()
+
+
+def test_trace_file_failure_falls_back_to_ros_log():
+    trace, log = CommunicationTrace(), Mock()
+    with patch("bxi_example_py_elf3.framework.platform.communication_trace.get_logging_directory",
+               side_effect=RuntimeError("unavailable")):
+        trace.start(log)
+    trace.stop()
+    assert any("communication trace file unavailable" in call.args[1]
+               for call in log.call_args_list)
+    assert any(call.args[1].startswith('communication_trace {"pid":')
+               for call in log.call_args_list)
 
 
 def test_continuously_stale_stamps_do_not_dump_json_per_frame(recorder):
@@ -301,17 +364,12 @@ def test_empty_take_does_not_create_a_fake_receive_sample(recorder):
     assert not trace._streams
 
 
-def test_independent_watchdog_observes_blocked_control_thread():
+def test_independent_watchdog_observes_blocked_control_thread(tmp_path):
     trace = CommunicationTrace(timeout_sec=0.03)
     waiting, release, detected = Event(), Event(), Event()
-    records = []
 
     def log(_severity, text):
-        if not text.startswith("communication_trace "):
-            return
-        data = json.loads(text.split(" ", 1)[1])
-        records.append(data)
-        if data["event"] == "stall":
+        if "通信告警" in text:
             detected.set()
 
     def control():
@@ -324,9 +382,15 @@ def test_independent_watchdog_observes_blocked_control_thread():
     worker.start()
     try:
         assert waiting.wait(1)
-        trace.start(log)
-        assert detected.wait(1)
+        with patch("bxi_example_py_elf3.framework.platform.communication_trace.get_logging_directory",
+                   return_value=str(tmp_path)):
+            trace.start(log)
+            assert detected.wait(1)
         assert worker.is_alive()  # No completed-cycle event was needed.
+        trace.stop()
+        detail, = tmp_path.glob(f"bxi_communication_trace_{os.getpid()}_*.jsonl")
+        records = [json.loads(line.split(" ", 1)[1])
+                   for line in detail.read_text().splitlines()]
         stall = next(r for r in records if r["event"] == "stall")
         assert stall["active"]["control"]["stage"] == "state_update"
     finally:

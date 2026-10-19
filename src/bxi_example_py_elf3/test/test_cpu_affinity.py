@@ -165,19 +165,19 @@ def test_executor_workers_rebind_even_when_spawned_from_control_cpu():
         executor._executor.shutdown(wait=True)
 
 
-def test_watchdog_explicitly_uses_background_cpus():
+def test_watchdog_explicitly_uses_background_cpus(tmp_path):
     p = CpuAffinityPlan.discover()
-    trace, ready, records = CommunicationTrace(), Event(), []
-
-    def log(_severity, text):
-        data = json.loads(text.split(" ", 1)[1])
-        records.append(data)
-        if data["event"] == "started":
-            ready.set()
+    trace = CommunicationTrace()
 
     try:
-        trace.start(log, cpu_affinity=p.roles[Role.BACKGROUND])
-        assert ready.wait(2)
+        with patch("bxi_example_py_elf3.framework.platform.communication_trace.get_logging_directory",
+                   return_value=str(tmp_path)):
+            trace.start(lambda _severity, _text: None,
+                        cpu_affinity=p.roles[Role.BACKGROUND])
+        trace.stop()
+        detail, = tmp_path.glob(f"bxi_communication_trace_{os.getpid()}_*.jsonl")
+        records = [json.loads(line.split(" ", 1)[1])
+                   for line in detail.read_text().splitlines()]
         started = next(r for r in records if r["event"] == "started")
         assert set(started["cpu_affinity"]) == p.roles[Role.BACKGROUND]
         assert started["scheduling_policy"] == os.SCHED_OTHER

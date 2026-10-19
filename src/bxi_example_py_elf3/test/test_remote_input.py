@@ -974,9 +974,18 @@ def test_recovery_does_not_replay_held_action_but_allows_next_press(demo):
     receive(demo, node, message(button=0), 1.0)
     receive(demo, node, message(ns=1_100_000_000), 1.5)
     assert not node.pending_remote_events  # Held reconnect button only synchronizes.
+    assert "btn_1=1" in node.get_logger().warning.call_args.args[0]
     receive(demo, node, message(ns=1_110_000_000, button=0), 1.51)
     receive(demo, node, message(ns=1_120_000_000), 1.52)
     assert list(node.pending_remote_events) == ["walk"]
+
+
+def test_repeated_recovery_button_warning_is_throttled(demo):
+    node = controller(demo)
+    receive(demo, node, message(button=0), 1.0)
+    receive(demo, node, message(ns=1_100_000_000), 1.5)
+    receive(demo, node, message(ns=1_200_000_000), 2.0)
+    assert node.get_logger().warning.call_count == 1
 
 
 def test_rejected_delayed_packet_cannot_restore_motion_or_trigger_action(demo):

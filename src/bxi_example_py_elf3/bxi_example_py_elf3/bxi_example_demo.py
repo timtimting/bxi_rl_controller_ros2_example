@@ -125,12 +125,16 @@ class BxiExample(Node):
         super().__init__("bxi_example_py")
 
         self._shutting_down = Event()
-        self._communication_trace = CommunicationTrace()
         self._remote_path = RemotePathMonitor(time.monotonic())
         self._remote_path_blocked = False
 
         # 加载运行参数
         self.load_files()
+        self._communication_trace = CommunicationTrace(
+            remote_timeout_sec=self._remote_input.timeout_sec
+        )
+        self._last_remote_suppressed_buttons: tuple[str, ...] = ()
+        self._next_remote_sync_warning = 0.0
 
         self._motor_override = NamedJointCommandOverride(
             timeout_sec=self.motor_override_timeout_sec,
@@ -498,9 +502,9 @@ class BxiExample(Node):
                 self.get_logger().info("IMU inference resumed after valid data")
         if remote_expired:
             self.get_logger().warning(
-                "remote input timeout: no valid motion_commands for "
-                f"{self._remote_input.timeout_sec:.3f}s; "
-                "clearing remote velocity and pending events"
+                f"remote input timeout >{self._remote_input.timeout_sec * 1000:.0f}ms: "
+                "velocity/buttons cleared; check /motion_commands rate "
+                "(repository default: 100Hz full-state)"
             )
         assert self._observation is not None
         return self._observation, events
@@ -903,6 +907,8 @@ class BxiExample(Node):
         received_at = time.monotonic()
         velocity = (msg.vel_des.x, msg.vel_des.y, msg.yawdot_des)
         stamp_ns = msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec
+        ignored_buttons: tuple[str, ...] = ()
+        warn_suppressed = False
         with self.lock_in:
             command_age = self._remote_input.snapshot(received_at)["receive_age_ms"]
             if self._remote_path.input_unsafe(received_at, command_age):
@@ -927,6 +933,20 @@ class BxiExample(Node):
                 events = self.runtime.extract_remote_events(
                     msg, sync_only=self.step < 2 or synchronize
                 )
+                if synchronize:
+                    ignored_buttons = tuple(
+                        f"btn_{i}={value}" for i in range(1, 11)
+                        if (value := int(getattr(msg, f"btn_{i}", 0))) != 0
+                    )
+                    warn_suppressed = bool(ignored_buttons) and (
+                        ignored_buttons != self._last_remote_suppressed_buttons
+                        or received_at >= self._next_remote_sync_warning
+                    )
+                    if warn_suppressed:
+                        self._next_remote_sync_warning = received_at + 5.0
+                    self._last_remote_suppressed_buttons = ignored_buttons
+                else:
+                    self._last_remote_suppressed_buttons = ()
                 self.raw_cmd_vel[:] = velocity
                 self.pending_remote_events.extend(events)
                 self._remote_path_blocked = False
@@ -938,9 +958,11 @@ class BxiExample(Node):
                 f"dropping remote input: {status}; "
                 "check publisher timestamps and clock synchronization"
             )
-        elif status == "recovered":
-            self.get_logger().info(
-                "remote input recovered; held buttons synchronized without replay"
+        if warn_suppressed:
+            self.get_logger().warning(
+                "remote buttons ignored on input recovery: "
+                + ", ".join(ignored_buttons)
+                + "; release and press again after motion_commands resumes"
             )
 
     def motor_override_callback(self, msg):
