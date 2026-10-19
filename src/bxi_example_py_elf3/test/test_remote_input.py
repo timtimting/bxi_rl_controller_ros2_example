@@ -910,6 +910,34 @@ def test_timeout_zeros_control_snapshot_and_discards_pending_actions(demo):
     assert node._remote_input.timeouts == 1
 
 
+def test_remote_freshness_log_severity_can_change_without_crashing(demo):
+    from rclpy.impl.rcutils_logger import RcutilsLogger
+
+    logger = RcutilsLogger("remote_freshness_severity_test")
+    node = SimpleNamespace(
+        lock_in=Lock(),
+        _remote_input=SimpleNamespace(snapshot=lambda _now: {"receive_age_ms": 1.0}),
+        _remote_path=SimpleNamespace(report=Mock(side_effect=[
+            ("info", "remote_path status=fresh"),
+            ("warning", "remote_path status=usb_stale"),
+            ("info", "remote_path status=fresh"),
+        ])),
+        get_logger=lambda: logger,
+    )
+    with patch.object(logger, "is_enabled_for", return_value=True), patch(
+        "rclpy.impl.rcutils_logger._rclpy.rclpy_logging_rcutils_log"
+    ) as emit:
+        for _ in range(3):
+            demo.BxiExample.remote_freshness_check(node)
+
+    assert emit.call_count == 3
+    assert [entry.args[2] for entry in emit.call_args_list] == [
+        "remote_path status=fresh",
+        "remote_path status=usb_stale",
+        "remote_path status=fresh",
+    ]
+
+
 def test_upstream_usb_delay_clears_commands_and_recovers_without_button_replay(demo):
     import json
 

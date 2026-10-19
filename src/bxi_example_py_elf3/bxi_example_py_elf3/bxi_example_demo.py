@@ -894,7 +894,10 @@ class BxiExample(Node):
             report = self._remote_path.report(now, age)
         if report:
             severity, text = report
-            getattr(self.get_logger(), severity)(text)
+            if severity == "warning":
+                self.get_logger().warning(text)
+            else:
+                self.get_logger().info(text)
 
     def joy_callback(self, msg):
         received_at = time.monotonic()
