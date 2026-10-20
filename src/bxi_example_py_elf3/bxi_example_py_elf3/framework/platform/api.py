@@ -48,6 +48,9 @@ class ControlPlatformAdapter(Protocol):
     ) -> MotorFrame:
         ...
 
+    def latch_orientation_protection(self) -> None:
+        ...
+
     def publish_motor_frame(self, frame: MotorFrame, *, safety: bool = False) -> None:
         ...
 

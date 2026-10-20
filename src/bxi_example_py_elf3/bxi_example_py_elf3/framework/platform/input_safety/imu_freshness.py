@@ -129,8 +129,10 @@ class ImuFallObserver:
         self.last_stamp_ns = None
         self._pending = False
 
-    def reset_streak(self):
+    def reset_streak(self, *, clear_pending=False):
         self.consecutive = 0
+        if clear_pending:
+            self._pending = False
 
     def observe(self, quat_xyzw, *, stamp_ns=0):
         if stamp_ns > 0:

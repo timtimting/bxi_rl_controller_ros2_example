@@ -4,13 +4,19 @@ import json
 import numpy as np
 import pytest
 
-from bxi_example_py_elf3.imu_freshness import (
+from bxi_example_py_elf3.framework.platform.input_safety.imu_freshness import (
     ImuFallObserver,
     ImuFaultObserver,
     ImuStampObserver,
     assess_imu_frame,
 )
-from bxi_example_py_elf3.imu_diagnostics import ImuFrameRecorder, format_imu_evidence
+from bxi_example_py_elf3.framework.platform.input_safety.imu_diagnostics import (
+    ImuFrameRecorder,
+    format_imu_evidence,
+)
+from bxi_example_py_elf3.framework.mod_api import OrientationGuardedState
+from bxi_example_py_elf3.framework.joints import JointLayout, JointStateBuffer
+from bxi_example_py_elf3.framework.platform.input_safety.imu_monitor import ImuSafetyMonitor
 
 
 def stamp(ns):
@@ -136,6 +142,54 @@ def test_confirmed_fall_is_not_lost_between_control_snapshots():
     assert not observer.snapshot_confirmed()
 
 
+def test_leaving_guarded_state_discards_pending_fall():
+    observer = ImuFallObserver(confirm_frames=2)
+    assert not observer.observe(orientation(65), stamp_ns=1)
+    assert observer.observe(orientation(65), stamp_ns=2)
+    observer.reset_streak(clear_pending=True)
+    assert not observer.snapshot_confirmed()
+    assert not observer.observe(orientation(65), stamp_ns=3)
+    assert observer.observe(orientation(65), stamp_ns=4)
+
+
+def test_mod_orientation_guard_requests_zero_torque_only_after_confirmation():
+    from unittest.mock import Mock
+
+    class Motion(OrientationGuardedState):
+        def on_update(self, ctx, dt):
+            pass
+
+    state = Motion(
+        "com.bxi.basic_actions/normal", 1,
+        protection_state="com.bxi.basic_actions/zero_torque",
+    )
+    ctx = SimpleNamespace(
+        current_quat_xyzw=(0.0, 0.0, 0.0, 1.0),
+        is_orientation_unsafe=Mock(return_value=False),
+        request_state=Mock(return_value=True),
+    )
+    assert state.orientation_guard_enabled
+    assert not state.orientation_limit_reached(ctx)
+    ctx.request_state.assert_not_called()
+
+    ctx.is_orientation_unsafe.return_value = True
+    assert state.orientation_limit_reached(ctx)
+    ctx.request_state.assert_called_once_with(
+        "com.bxi.basic_actions/zero_torque",
+        trigger="imu_fall_confirmed",
+        force=True,
+    )
+
+
+def test_mod_orientation_guard_requires_explicit_safe_state():
+    class Motion(OrientationGuardedState):
+        def on_update(self, ctx, dt):
+            pass
+
+    with pytest.raises(ValueError, match="protection_state"):
+        Motion("com.example/motion", 1, protection_state="")
+
+
 def record_imu_evidence_frame(recorder, sequence, *, valid=True, quat=None, reason=None):
     return recorder.record(
         received_at=sequence * 0.01,
@@ -241,3 +295,93 @@ def test_imu_evidence_keeps_last_valid_frame_outside_invalid_window():
     assert all(not frame["payload_valid"] for frame in evidence["frames"])
     assert evidence["last_valid_before_window"]["rx_seq"] == 1
     assert evidence["last_valid_before_window"]["payload_valid"]
+
+
+def monitor(*, required=True):
+    return ImuSafetyMonitor(
+        required=required, startup_timeout_sec=1.0, runtime_timeout_sec=0.1,
+        guard_kp=20.0, guard_kd=1.0,
+    )
+
+
+def monitor_frame(imu, at, *, stamp_ns=1, quat=(0.0, 0.0, 0.0, 1.0)):
+    return imu.observe_frame(
+        received_at=at, frame_id="elf3",
+        stamp=SimpleNamespace(sec=1, nanosec=stamp_ns),
+        quat_xyzw=quat, omega=(0.0, 0.0, 0.0),
+        acceleration=(0.0, 0.0, 9.81),
+    )
+
+
+def test_monitor_startup_timeout_is_reported_once_without_valid_frame():
+    imu = monitor()
+    assert imu.startup_check(0.0).warn_waiting
+    report = imu.startup_check(1.1)
+    assert report.evidence.details["timeout_ms"] == 1000.0
+    assert imu.startup_check(1.2).evidence is None
+    imu.stamp_observer.observe = lambda _stamp: ("fresh", 1.0)
+    monitor_frame(imu, 1.3)
+    assert imu.startup_check(1.4) is None
+
+
+def test_monitor_invalid_stamps_pause_immediately_and_latch_after_five_frames():
+    imu = monitor()
+    imu.stamp_observer.observe = lambda _stamp: ("fresh", 1.0)
+    monitor_frame(imu, 1.0)
+    imu.stamp_observer.observe = lambda _stamp: ("stale", 150.0)
+    for count in range(1, 6):
+        report = monitor_frame(imu, 1.0 + count * 0.01, stamp_ns=count + 1)
+        assert report.assessment.reasons == ("stamp_stale",)
+        assert imu.last_received_at == 1.0
+        assert imu.protection_latched is (count == 5)
+        assert imu.block_reason(1.0 + count * 0.01) is not None
+    assert report.frame_evidence.details["confirm_frames"] == 5
+    assert not imu.can_release(1.06)
+
+
+def test_monitor_timeout_confirms_across_five_control_checks():
+    imu = monitor()
+    imu.stamp_observer.observe = lambda _stamp: ("fresh", 1.0)
+    monitor_frame(imu, 1.0)
+    for count, now in enumerate((1.2, 1.221, 1.242, 1.263, 1.284), 1):
+        report = imu.check_runtime_timeout(now, 0.02)
+        assert report.timeout_check[1] == count
+        assert report.protection_latched is (count == 5)
+    assert report.evidence.details["last_valid_age_ms"] == pytest.approx(284.0)
+    assert imu.block_reason(1.285) == "data_protection"
+
+
+def test_monitor_orientation_confirmation_only_while_guard_is_active():
+    imu = monitor(required=False)
+    roll_half_angle = np.deg2rad(65) / 2
+    quat = (np.sin(roll_half_angle), 0.0, 0.0, np.cos(roll_half_angle))
+    for count in range(6):
+        monitor_frame(imu, 1.0 + count * 0.01, stamp_ns=count + 1, quat=quat)
+    assert imu.fall_observer.consecutive == 0
+    imu.set_orientation_guard_active(True)
+    for count in range(5):
+        report = monitor_frame(imu, 1.1 + count * 0.01, stamp_ns=count + 7, quat=quat)
+        assert report.fall_confirmed is (count == 4)
+        assert imu.block_reason(1.1 + count * 0.01) == "orientation_limit"
+    assert imu.fall_observer.snapshot_confirmed()
+    imu.set_orientation_guard_active(False)
+    assert not imu.fall_observer.snapshot_confirmed()
+    assert imu.block_reason(1.2) is None
+
+
+def test_monitor_guard_frame_never_energizes_zero_torque():
+    imu = monitor()
+    joints = JointStateBuffer(JointLayout(("test_joint",)), dtype=np.float64)
+    joints.update([0.3], [0.0])
+    first = imu.safety_frame(joints.view, "com.bxi.basic_actions/normal")
+    assert first.qpos.tolist() == pytest.approx([0.3])
+    assert first.kp.tolist() == [20.0]
+    joints.update([0.5], [0.0])
+    second = imu.safety_frame(joints.view, "com.bxi.basic_actions/zero_torque")
+    assert second is first
+    assert second.qpos.tolist() == pytest.approx([0.3])
+    assert second.kp.tolist() == [0.0]
+    imu.set_inference_blocked(False)
+    assert imu.safety_frame(
+        joints.view, "com.bxi.basic_actions/normal"
+    ).qpos.tolist() == pytest.approx([0.5])

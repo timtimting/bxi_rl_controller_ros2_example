@@ -16,7 +16,7 @@ from .resource import (
     ResourcePolicy,
     ResourceStatus,
 )
-from .state import RobotControlState, StateBehavior
+from .state import OrientationGuardedState, RobotControlState, StateBehavior
 from .states import (
     MotionReplayState,
     PolicyState,
@@ -53,6 +53,7 @@ __all__ = [
     "MotorFrame",
     "NodeBuildContext",
     "NodeFactory",
+    "OrientationGuardedState",
     "PolicyState",
     "PoseState",
     "ProceduralState",

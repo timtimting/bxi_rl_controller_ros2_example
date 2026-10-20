@@ -7,6 +7,8 @@ import sys
 import time
 from pathlib import Path
 
+from view_elf_log import colorize
+
 
 MARKER = "communication_trace {"
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
@@ -16,7 +18,7 @@ def route_line(line, main_log, trace_log, trace_name, hardware_summary):
     line = ANSI_ESCAPE.sub("", line)
     prefix, marker, payload = line.partition(MARKER)
     if not marker:
-        main_log.write(line)
+        main_log.write(colorize(line, True))
         return
     trace_log.write(line)
     try:
@@ -24,7 +26,7 @@ def route_line(line, main_log, trace_log, trace_name, hardware_summary):
         if not isinstance(detail, dict):
             raise ValueError("trace must be a JSON object")
     except (json.JSONDecodeError, ValueError):
-        main_log.write(line)
+        main_log.write(colorize(line, True))
         return
     if detail.get("side") != "hardware" or detail.get("event") == "started":
         return
@@ -35,7 +37,7 @@ def route_line(line, main_log, trace_log, trace_name, hardware_summary):
     motor = detail.get("motor_tx") or {}
     lane = detail.get("joint_lane") or {}
     if not all(isinstance(item, dict) for item in (command, joint, motor, lane)):
-        main_log.write(line)
+        main_log.write(colorize(line, True))
         return
 
     def stalled(stream):
@@ -48,14 +50,17 @@ def route_line(line, main_log, trace_log, trace_name, hardware_summary):
         return
     hardware_summary[:] = [key, now]
     main_log.write(
-        f"{prefix}hardware_trace event={event} "
-        f"command_age_ms={command.get('age_ms', '--')} "
-        f"joint_age_ms={joint.get('age_ms', '--')} "
-        f"motor_age_ms={motor.get('age_ms', '--')} "
-        f"lane={lane.get('stage', '--')} "
-        f"motor_timeouts={detail.get('motor_timeouts', '--')} "
-        f"watchdog_drops={detail.get('watchdog_drops', '--')} "
-        f"detail={trace_name}\n"
+        colorize(
+            f"{prefix}hardware_trace event={event} "
+            f"command_age_ms={command.get('age_ms', '--')} "
+            f"joint_age_ms={joint.get('age_ms', '--')} "
+            f"motor_age_ms={motor.get('age_ms', '--')} "
+            f"lane={lane.get('stage', '--')} "
+            f"motor_timeouts={detail.get('motor_timeouts', '--')} "
+            f"watchdog_drops={detail.get('watchdog_drops', '--')} "
+            f"detail={trace_name}\n",
+            True,
+        )
     )
 
 

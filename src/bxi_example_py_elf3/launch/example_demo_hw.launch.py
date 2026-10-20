@@ -142,7 +142,7 @@ def generate_launch_description():
                     {"/remote_max_age_sec": LaunchConfiguration("remote_max_age_sec")},
                 ],
                 emulate_tty=True,
-                arguments=[("__log_level:=debug")],
+                ros_arguments=["--log-level", "debug"],
             ),
         ]
     )

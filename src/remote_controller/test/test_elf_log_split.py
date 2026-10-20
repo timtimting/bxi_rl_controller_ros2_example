@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -7,6 +8,8 @@ from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "elf_log_split.py"
 STARTER = SCRIPT.with_name("start_elf_logged.sh")
+VIEWER = SCRIPT.with_name("view_elf_log.py")
+ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
 def test_full_trace_is_kept_out_of_main_log(tmp_path):
@@ -18,6 +21,7 @@ def test_full_trace_is_kept_out_of_main_log(tmp_path):
     controller = {"event": "stall", "diagnostic_id": 7, "stalled_streams": ["joint_rx"]}
     lines = [
         "[INFO] booted\n",
+        "[DEBUG] reset step 2 requested\n",
         "\033[36m[hardware]\033[0m communication_trace " + json.dumps(hardware) + "\n",
         "[hardware] communication_trace " + json.dumps(hardware) + "\n",
         "[demo] communication_trace " + json.dumps(controller) + "\n",
@@ -27,13 +31,24 @@ def test_full_trace_is_kept_out_of_main_log(tmp_path):
                    input="".join(lines), text=True, check=True)
     main_text = main.read_text()
     trace_text = trace.read_text()
-    assert "[INFO] booted" in main_text
-    assert "[WARN] communication summary #7" in main_text
-    assert "\033[" not in main_text + trace_text
-    assert "hardware_trace event=stall" in main_text
-    assert main_text.count("hardware_trace event=stall") == 1
-    assert '"stalled_streams"' not in main_text
+    plain_main = ANSI_ESCAPE.sub("", main_text)
+    assert "[INFO] booted" in plain_main
+    assert "[DEBUG] reset step 2 requested" in plain_main
+    assert "[WARN] communication summary #7" in plain_main
+    assert "\033[1;33m[WARN]\033[0m" in main_text
+    assert "\033[90m[DEBUG]\033[0m" in main_text
+    assert "\033[" not in trace_text
+    assert "hardware_trace event=stall" in plain_main
+    assert plain_main.count("hardware_trace event=stall") == 1
+    assert '"stalled_streams"' not in plain_main
     assert trace_text.count("communication_trace {") == 3
+
+    plain_view = subprocess.run(
+        [sys.executable, str(VIEWER), "--once", "--color", "never", str(main)],
+        text=True, capture_output=True, check=True,
+    ).stdout
+    assert "\033[" not in plain_view
+    assert "[WARN] communication summary #7" in plain_view
 
 
 def test_log_storage_failure_preserves_output_in_journal(tmp_path):

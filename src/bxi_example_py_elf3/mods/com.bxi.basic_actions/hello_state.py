@@ -12,8 +12,8 @@ from bxi_example_py_elf3.framework.mod_api import (
     JointLayout,
     JointTargetBuffer,
     MotorFrame,
+    OrientationGuardedState,
     ResourceHandle,
-    RobotControlState,
     RunningFrameProvider,
     StateBehavior,
 )
@@ -40,7 +40,7 @@ HELLO_OUTPUT_JOINTS = JointLayout(
 )
 
 
-class HelloState(RobotControlState, EntryFrameProvider, RunningFrameProvider):
+class HelloState(OrientationGuardedState, EntryFrameProvider, RunningFrameProvider):
     HELLO_DURATION_FRAMES = 150  # 3 s at the 50 Hz control period
     HEAD_Y_AMPLITUDE = 0.10
     HEAD_Z_AMPLITUDE = 0.20
@@ -54,7 +54,11 @@ class HelloState(RobotControlState, EntryFrameProvider, RunningFrameProvider):
         state_id: int,
         policy: ResourceHandle[HumanoidGaitPolicyLiteIsaaclab],
     ) -> None:
-        super().__init__(name, state_id, resources=(policy,))
+        super().__init__(
+            name, state_id,
+            protection_state="com.bxi.basic_actions/zero_torque",
+            resources=(policy,),
+        )
         self._policy = policy
         self.playing = True
         self.shaketime = 0
@@ -158,8 +162,7 @@ class HelloState(RobotControlState, EntryFrameProvider, RunningFrameProvider):
         return frame
 
     def on_update(self, ctx: RobotControlContext, dt: float) -> None:
-        if ctx.is_orientation_unsafe(ctx.current_quat_xyzw):
-            ctx.request_state("com.bxi.basic_actions/zero_torque", trigger="safety")
+        if self.orientation_limit_reached(ctx):
             return
         # if self.shaketime >= self.HELLO_DURATION_FRAMES:
         #     ctx.request_state(

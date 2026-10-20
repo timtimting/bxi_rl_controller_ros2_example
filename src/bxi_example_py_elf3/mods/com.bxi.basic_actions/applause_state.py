@@ -10,8 +10,8 @@ from numpy.typing import NDArray
 
 from bxi_example_py_elf3.policies import HumanoidGaitPolicyLiteIsaaclab
 from bxi_example_py_elf3.policies.joints import ELF3_POLICY_JOINTS
+from bxi_example_py_elf3.framework.mod_api import OrientationGuardedState
 from bxi_example_py_elf3.framework.mod_api import ResourceHandle
-from bxi_example_py_elf3.framework.mod_api import RobotControlState
 from bxi_example_py_elf3.framework.mod_api import StateBehavior
 from bxi_example_py_elf3.framework.mod_api.transition import (
     EntryFrameProvider,
@@ -46,7 +46,7 @@ def load_clip(path: Path, *, start_frame: int, tail_trim_frames: int) -> Playbac
     return PlaybackClip(positions, float(raw["fps"]))
 
 
-class ApplauseState(RobotControlState, EntryFrameProvider, RunningFrameProvider):
+class ApplauseState(OrientationGuardedState, EntryFrameProvider, RunningFrameProvider):
     def __init__(
         self,
         name: str,
@@ -54,7 +54,11 @@ class ApplauseState(RobotControlState, EntryFrameProvider, RunningFrameProvider)
         policy: ResourceHandle[HumanoidGaitPolicyLiteIsaaclab],
         clip: ResourceHandle[PlaybackClip],
     ) -> None:
-        super().__init__(name, state_id, resources=(policy, clip))
+        super().__init__(
+            name, state_id,
+            protection_state="com.bxi.basic_actions/zero_torque",
+            resources=(policy, clip),
+        )
         self._policy = policy
         self._clip = clip
         self.frame = 0.0
@@ -111,8 +115,7 @@ class ApplauseState(RobotControlState, EntryFrameProvider, RunningFrameProvider)
         return frame
 
     def on_update(self, ctx: RobotControlContext, dt: float) -> None:
-        if ctx.is_orientation_unsafe(ctx.current_quat_xyzw):
-            ctx.request_state("com.bxi.basic_actions/zero_torque", trigger="safety")
+        if self.orientation_limit_reached(ctx):
             return
         if self.frame >= self.clip.positions.shape[0]:
             ctx.request_state(

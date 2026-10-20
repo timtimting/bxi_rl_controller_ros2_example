@@ -1,6 +1,6 @@
 import json
 
-from bxi_example_py_elf3.remote_freshness import RemotePathMonitor
+from bxi_example_py_elf3.framework.platform.input_safety.remote_freshness import RemotePathMonitor
 
 
 def frame(now=1.0, **overrides):

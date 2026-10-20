@@ -9,8 +9,8 @@ from geometry_msgs.msg import Twist
 from rclpy.qos import QoSProfile
 
 from bxi_example_py_elf3.policies import HumanoidGaitPolicyLiteIsaaclab
+from bxi_example_py_elf3.framework.mod_api import OrientationGuardedState
 from bxi_example_py_elf3.framework.mod_api import ResourceHandle
-from bxi_example_py_elf3.framework.mod_api import RobotControlState
 from bxi_example_py_elf3.framework.mod_api import StateBehavior
 from bxi_example_py_elf3.framework.mod_api.transition import (
     EntryFrameProvider,
@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from bxi_example_py_elf3.framework.mod_api import RobotControlContext
 
 
-class NormalState(RobotControlState, EntryFrameProvider, RunningFrameProvider):
+class NormalState(OrientationGuardedState, EntryFrameProvider, RunningFrameProvider):
     _CMD_VEL_TOPIC = "/cmd_vel"
     _CMD_VEL_MINIMUM = np.asarray((-1.0, -0.5, -1.5), dtype=np.float32)
     _CMD_VEL_MAXIMUM = np.asarray((1.0, 0.5, 1.5), dtype=np.float32)
@@ -33,7 +33,11 @@ class NormalState(RobotControlState, EntryFrameProvider, RunningFrameProvider):
         state_id: int,
         policy: ResourceHandle[HumanoidGaitPolicyLiteIsaaclab],
     ) -> None:
-        super().__init__(name, state_id, resources=(policy,))
+        super().__init__(
+            name, state_id,
+            protection_state="com.bxi.basic_actions/zero_torque",
+            resources=(policy,),
+        )
         self._policy = policy
         self._navigation_control = False
         self._navigation_command = np.zeros(3, dtype=np.float32)
@@ -115,8 +119,7 @@ class NormalState(RobotControlState, EntryFrameProvider, RunningFrameProvider):
         return self._motor_frame_from_target(ctx, output.joints)
 
     def on_update(self, ctx: RobotControlContext, dt: float) -> None:
-        if ctx.is_orientation_unsafe(ctx.current_quat_xyzw):
-            ctx.request_state("com.bxi.basic_actions/zero_torque", trigger="safety")
+        if self.orientation_limit_reached(ctx):
             return
         self._apply_frame(ctx, self.sample_running_frame(ctx, dt, advance=True))
 

@@ -80,6 +80,8 @@ class StateBehavior(Generic[CtxT]):
 class RobotControlState(StateBehavior[RobotControlContext], ABC):
     """Main extensibility point for states that control the robot."""
 
+    orientation_guard_enabled = False
+
     def __init__(
         self,
         name: str,
@@ -130,6 +132,10 @@ class RobotControlState(StateBehavior[RobotControlContext], ABC):
         from_state: StateBehavior[RobotControlContext],
     ) -> None:
         """Undo preparation if the transition is interrupted."""
+
+    def on_orientation_limit_confirmed(self, ctx: RobotControlContext) -> bool:
+        """Handle a confirmed orientation limit while normal updates are paused."""
+        return False
 
     def get_cmd_vel(self, ctx: RobotControlContext) -> NDArray[np.float32]:
         cmd_vel = self._profile_cmd_vel(ctx)
@@ -233,4 +239,36 @@ class RobotControlState(StateBehavior[RobotControlContext], ABC):
             ctx.set_motor_target(frame)
 
 
-__all__ = ["RobotControlState", "StateBehavior"]
+class OrientationGuardedState(RobotControlState):
+    """Opt in to confirmed IMU angle protection with an explicit safe state."""
+
+    orientation_guard_enabled = True
+
+    def __init__(
+        self,
+        name: str,
+        state_id: int,
+        *,
+        protection_state: str,
+        resources: Sequence[ResourceHandle[Any]] = (),
+    ) -> None:
+        if not isinstance(protection_state, str) or not protection_state.strip():
+            raise ValueError("protection_state must be a nonempty state name")
+        super().__init__(name, state_id, resources=resources)
+        self.protection_state = protection_state
+
+    def on_orientation_limit_confirmed(self, ctx: RobotControlContext) -> bool:
+        return ctx.request_state(
+            self.protection_state,
+            trigger="imu_fall_confirmed",
+            force=True,
+        )
+
+    def orientation_limit_reached(self, ctx: RobotControlContext) -> bool:
+        if not ctx.is_orientation_unsafe(ctx.current_quat_xyzw):
+            return False
+        self.on_orientation_limit_confirmed(ctx)
+        return True
+
+
+__all__ = ["OrientationGuardedState", "RobotControlState", "StateBehavior"]

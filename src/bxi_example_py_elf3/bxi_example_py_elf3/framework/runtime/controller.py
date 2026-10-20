@@ -27,6 +27,7 @@ from bxi_example_py_elf3.framework.platform.cpu_affinity import (
 )
 
 from .mod_loader import ModRuntime, load_mod_runtime
+from .legacy_mod_compat import legacy_orientation_target
 from .logging import ScopedLoggers
 from .mod_nodes import ExecutorLike, ModNodeManager
 from .state_builder import build_robot_states
@@ -257,7 +258,7 @@ class RobotControlFramework:
 
     def observe_without_inference(
         self, observation: RobotObservation, *, safe_state_names: frozenset[str]
-    ) -> None:
+    ) -> bool:
         """Refresh joint context and safety requests without advancing any state."""
         if self._closed:
             raise RuntimeError("RobotControlFramework is closed")
@@ -271,9 +272,21 @@ class RobotControlFramework:
                     state_name, trigger=trigger, transition=transition,
                     delay=delay, force=force,
                 )
+        orientation_protected = False
+        state = self.state_machine.current
+        if observation.orientation_unsafe_confirmed:
+            if getattr(state, "orientation_guard_enabled", False):
+                orientation_protected = state.on_orientation_limit_confirmed(self)
+            else:
+                target = legacy_orientation_target(state)
+                if target is not None:
+                    orientation_protected = self.request_state(
+                        target, trigger="imu_fall_confirmed", force=True,
+                    )
         self.current_cmd_vel.fill(0.0)
         self._motor_target = None
         self.loop_count += 1
+        return orientation_protected
 
     def maintenance_update(self) -> None:
         """Run non-control Mod supervision outside the control data path."""

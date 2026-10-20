@@ -34,9 +34,11 @@ TOKENS = re.compile(
     r"|(?P<hardware>motor_loss:|hardware_trace|can\[\d+\] rx error cnt)"
     r"|(?P<traceback>Traceback \(most recent call last\):|RCLError)"
 )
+ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
 def colorize(line: str, enabled: bool) -> str:
+    line = ANSI_ESCAPE.sub("", line)
     if not enabled:
         return line
 

@@ -12,14 +12,9 @@ from unittest.mock import Mock, call, patch
 import numpy as np
 import pytest
 
-from bxi_example_py_elf3.remote_input import RemoteInputMonitor
-from bxi_example_py_elf3.remote_freshness import RemotePathMonitor
-from bxi_example_py_elf3.imu_freshness import (
-    ImuFallObserver,
-    ImuFaultObserver,
-    ImuStampObserver,
-)
-from bxi_example_py_elf3.imu_diagnostics import ImuFrameRecorder
+from bxi_example_py_elf3.framework.platform.input_safety.remote_input import RemoteInputMonitor
+from bxi_example_py_elf3.framework.platform.input_safety.remote_freshness import RemotePathMonitor
+from bxi_example_py_elf3.framework.platform.input_safety.imu_monitor import ImuSafetyMonitor
 
 
 @pytest.mark.parametrize("value", [0, -1, float("inf"), float("nan")])
@@ -101,7 +96,10 @@ def controller(demo):
     runtime.framework = SimpleNamespace(
         extract_remote_events=lambda msg, sync_only=False: adapter.extract_events(
             msg, sync_only=sync_only
-        )
+        ),
+        state_machine=SimpleNamespace(
+            current=SimpleNamespace(orientation_guard_enabled=False),
+        ),
     )
     runtime.scheduler = SimpleNamespace(period_sec=0.02)
     joints = JointStateBuffer(JointLayout(("test_joint",)), dtype=np.float64)
@@ -115,19 +113,11 @@ def controller(demo):
         _quat_xyzw_snapshot=np.zeros(4), _quat_wxyz_snapshot=np.zeros(4),
         _omega_snapshot=np.zeros(3), _linear_acceleration_snapshot=np.zeros(3),
         _cmd_snapshot=np.zeros(3, dtype=np.float32),
-        quat_xyzw=np.zeros(4), quat_wxyz=np.zeros(4), omega=np.zeros(3),
-        linear_acceleration=np.zeros(3), _imu_protection_latched=False,
-        _imu_fall_protection_latched=False, _next_imu_fall_request_warning=0.0,
-        _imu_latest_frame_fault=False, _imu_inference_paused=False,
-        _imu_guard_frame=None, _imu_guard_zero_torque=False, imu_required=False,
-        _imu_fall_observer=ImuFallObserver(),
-        _imu_fault_observer=ImuFaultObserver(),
-        _imu_stamp_observer=ImuStampObserver(),
-        _imu_stamp_warning_count=0, _imu_received=False,
-        imu_runtime_timeout_sec=0.1,
-        _imu_frame_recorder=ImuFrameRecorder(),
-        _imu_first_received_logged=False, _imu_last_received_at=None,
-        _imu_invalid_frame_count=0,
+        _imu=ImuSafetyMonitor(
+            required=False, startup_timeout_sec=15.0,
+            runtime_timeout_sec=0.1,
+            guard_kp=demo.IMU_GUARD_KP, guard_kd=demo.IMU_GUARD_KD,
+        ),
         get_logger=Mock(return_value=Mock()),
         get_clock=lambda: SimpleNamespace(
             now=lambda: SimpleNamespace(nanoseconds=1_000_000_000)
@@ -326,9 +316,9 @@ def test_slow_input_log_does_not_block_remote_reception(demo, case, log_level):
     node._joint_source = demo.NamedJointStateSource(dtype=np.float64)
     node._joint_received = False
     node._bad_joint_state_warned = False
-    node.imu_required = False
+    node._imu.required = False
     node.topic_prefix = "simulation/"
-    node._imu_first_received_logged = False
+    node._imu.first_received_logged = False
     node._motor_override_waiting_for_joints_warned = False
     imu = SimpleNamespace(
         orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0),
@@ -396,7 +386,7 @@ def test_slow_input_log_does_not_block_remote_reception(demo, case, log_level):
     elif case == "joint_invalid":
         assert not node._joint_received and node._bad_joint_state_warned
     elif case == "imu_first":
-        assert node._imu_received and node._imu_first_received_logged
+        assert node._imu.received and node._imu.first_received_logged
     else:
         assert node._motor_override_waiting_for_joints_warned
 
@@ -405,7 +395,9 @@ def test_fall_confirmation_flows_from_imu_messages_to_control_snapshot(demo):
     from bxi_example_py_elf3.framework.runtime.controller import RobotControlFramework
 
     node = controller(demo)
-    node.imu_required = False
+    node._imu.required = False
+    node.runtime.framework.state_machine.current.orientation_guard_enabled = True
+    node._imu.orientation_guard_active = True
     node.topic_prefix = "simulation/"
     roll = np.deg2rad(65) / 2
     imu = SimpleNamespace(
@@ -425,11 +417,14 @@ def test_fall_confirmation_flows_from_imu_messages_to_control_snapshot(demo):
             context, observation.quat_xyzw
         ) is (frame == 5)
     warning = node.get_logger().warning
-    assert warning.call_count == 6
-    assert all(
+    assert sum(
         "IMU orientation over limit" in call.args[0]
-        for call in warning.call_args_list[:5]
-    )
+        for call in warning.call_args_list
+    ) == 5
+    assert sum(
+        "IMU inference paused" in call.args[0]
+        for call in warning.call_args_list
+    ) == 1
     prefix, evidence = warning.call_args.args[0].split("evidence=", 1)
     assert "unsafe orientation confirmed by 5 consecutive IMU frames" in prefix
     evidence = json.loads(evidence)
@@ -441,7 +436,7 @@ def test_fall_confirmation_flows_from_imu_messages_to_control_snapshot(demo):
     for frame in range(6, 9):
         imu.header.stamp.nanosec = frame
         demo.BxiExample.imu_callback(node, imu)
-    assert warning.call_count == 7
+    assert warning.call_count == 8
     followup = json.loads(warning.call_args.args[0].split("IMU protection follow-up: ")[1])
     assert followup["incident_id"] == evidence["incident_id"]
     assert [frame["rx_seq"] for frame in followup["frames"]] == [6, 7, 8]
@@ -449,9 +444,11 @@ def test_fall_confirmation_flows_from_imu_messages_to_control_snapshot(demo):
 
 def test_first_unsafe_imu_frame_pauses_inference_until_clean_frame(demo):
     node = controller(demo)
-    node.imu_required = True
-    node._imu_stamp_observer = Mock()
-    node._imu_stamp_observer.observe.return_value = ("fresh", 1.0)
+    node._imu.required = True
+    node.runtime.framework.state_machine.current.orientation_guard_enabled = True
+    node._imu.orientation_guard_active = True
+    node._imu.stamp_observer = Mock()
+    node._imu.stamp_observer.observe.return_value = ("fresh", 1.0)
     roll = np.deg2rad(65) / 2
     imu = SimpleNamespace(
         header=SimpleNamespace(stamp=SimpleNamespace(sec=1, nanosec=0)),
@@ -466,8 +463,8 @@ def test_first_unsafe_imu_frame_pauses_inference_until_clean_frame(demo):
         observation, events = demo.BxiExample.snapshot_control_inputs(node)
     assert observation.inference_blocked
     assert events == ()
-    assert not node._imu_fall_protection_latched
-    assert node._imu_fall_observer.consecutive == 1
+    assert not node._imu.fall_protection_latched
+    assert node._imu.fall_observer.consecutive == 1
     assert "reason=orientation_limit" in node.get_logger().warning.call_args.args[0]
 
     imu.header.stamp.nanosec = 1
@@ -478,30 +475,165 @@ def test_first_unsafe_imu_frame_pauses_inference_until_clean_frame(demo):
     with patch.object(demo.time, "monotonic", return_value=1.03):
         observation, _ = demo.BxiExample.snapshot_control_inputs(node)
     assert not observation.inference_blocked
-    assert node._imu_fall_observer.consecutive == 0
+    assert node._imu.fall_observer.consecutive == 0
+
+
+def test_unguarded_motion_ignores_angle_limit_but_guarded_motion_counts_new_frames(demo):
+    node = controller(demo)
+    node._imu.required = True
+    node._imu.stamp_observer = Mock()
+    node._imu.stamp_observer.observe.return_value = ("fresh", 1.0)
+    roll = np.deg2rad(65) / 2
+    imu = SimpleNamespace(
+        header=SimpleNamespace(stamp=SimpleNamespace(sec=1, nanosec=0)),
+        orientation=SimpleNamespace(x=np.sin(roll), y=0.0, z=0.0, w=np.cos(roll)),
+        angular_velocity=SimpleNamespace(x=0.0, y=0.0, z=0.0),
+        linear_acceleration=SimpleNamespace(x=0.0, y=0.0, z=9.81),
+    )
+    for count in range(1, 7):
+        imu.header.stamp.nanosec = count
+        with patch.object(demo.time, "monotonic", return_value=1.0 + count * 0.01):
+            demo.BxiExample.imu_callback(node, imu)
+            observation, _ = demo.BxiExample.snapshot_control_inputs(node)
+        assert not observation.inference_blocked
+        assert not observation.orientation_unsafe_confirmed
+    assert node._imu.fall_observer.consecutive == 0
+    assert not node._imu.fall_protection_latched
+    assert not any(
+        "IMU orientation over limit" in call.args[0]
+        for call in node.get_logger().warning.call_args_list
+    )
+
+    node.runtime.framework.state_machine.current.orientation_guard_enabled = True
+    with patch.object(demo.time, "monotonic", return_value=1.07):
+        demo.BxiExample.snapshot_control_inputs(node)
+    for count in range(7, 12):
+        imu.header.stamp.nanosec = count
+        with patch.object(demo.time, "monotonic", return_value=1.0 + count * 0.01):
+            demo.BxiExample.imu_callback(node, imu)
+            observation, _ = demo.BxiExample.snapshot_control_inputs(node)
+        assert observation.orientation_unsafe_confirmed is (count == 11)
+        assert observation.inference_blocked
+
+
+def test_confirmed_angle_uses_active_mod_even_without_inference():
+    from bxi_example_py_elf3.framework.runtime.controller import RobotControlFramework
+
+    state = SimpleNamespace(
+        orientation_guard_enabled=True,
+        on_orientation_limit_confirmed=Mock(return_value=True),
+    )
+    framework = RobotControlFramework.__new__(RobotControlFramework)
+    framework._closed = False
+    framework._set_observation = Mock()
+    framework.state_machine = SimpleNamespace(current=state)
+    framework._pending_state_requests = []
+    framework.current_cmd_vel = np.ones(3, dtype=np.float32)
+    framework._motor_target = None
+    framework.loop_count = 0
+    observation = SimpleNamespace(orientation_unsafe_confirmed=True)
+
+    assert framework.observe_without_inference(
+        observation, safe_state_names=frozenset()
+    )
+    state.on_orientation_limit_confirmed.assert_called_once_with(framework)
+    state.orientation_guard_enabled = False
+    assert not framework.observe_without_inference(
+        observation, safe_state_names=frozenset()
+    )
+    state.on_orientation_limit_confirmed.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "state_name",
+    (
+        "com.bxi.basic_actions/normal",
+        "com.bxi.basic_actions/normal_run",
+        "com.bxi.basic_actions/amp_run",
+        "com.bxi.basic_actions/dance",
+        "com.bxi.basic_actions/applause",
+        "com.bxi.basic_actions/hello",
+    ),
+)
+def test_origin_dev_legacy_orientation_guard_survives_paused_inference(state_name):
+    from bxi_example_py_elf3.framework.platform.runtime import RobotControlRuntime
+    from bxi_example_py_elf3.framework.runtime.controller import RobotControlFramework
+
+    state = SimpleNamespace(
+        name=state_name,
+        orientation_guard_enabled=False,
+        on_orientation_limit_confirmed=Mock(),
+    )
+    framework = RobotControlFramework.__new__(RobotControlFramework)
+    framework._closed = False
+    framework._set_observation = Mock()
+    framework._robot_layout = object()
+    framework.state_machine = SimpleNamespace(
+        current=state, request_transition=Mock(return_value=True),
+    )
+    framework._pending_state_requests = []
+    framework.current_cmd_vel = np.ones(3, dtype=np.float32)
+    framework._motor_target = None
+    framework.loop_count = 0
+    runtime = RobotControlRuntime.__new__(RobotControlRuntime)
+    runtime._framework_lock = Lock()
+    runtime.framework = framework
+    assert runtime.orientation_guard_active
+
+    observation = SimpleNamespace(orientation_unsafe_confirmed=True)
+    assert framework.observe_without_inference(
+        observation, safe_state_names=frozenset(),
+    )
+    framework.state_machine.request_transition.assert_called_once_with(
+        "com.bxi.basic_actions/zero_torque", trigger="imu_fall_confirmed",
+        transition=None, delay=0.0, force=True,
+    )
+    state.on_orientation_limit_confirmed.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "state_name",
+    (
+        "com.bxi.basic_actions/initial_pos",
+        "com.bxi.basic_actions/recover",
+        "com.bxi.back_flip/back_flip",
+        "com.bxi.forward_flip/forward_flip",
+    ),
+)
+def test_origin_dev_unguarded_state_does_not_gain_orientation_protection(state_name):
+    from bxi_example_py_elf3.framework.runtime.legacy_mod_compat import (
+        orientation_guard_active,
+        legacy_orientation_target,
+    )
+
+    state = SimpleNamespace(
+        name=state_name, orientation_guard_enabled=False,
+    )
+    assert not orientation_guard_active(state)
+    assert legacy_orientation_target(state) is None
 
 
 @pytest.mark.parametrize("fault", ["timeout", "invalid_frame"])
 def test_imu_data_fault_pauses_inference_before_protection(demo, fault):
     node = controller(demo)
-    node.imu_required = True
-    node._imu_received = True
-    node._imu_last_received_at = 1.0
+    node._imu.required = True
+    node._imu.received = True
+    node._imu.last_received_at = 1.0
     if fault == "invalid_frame":
-        node._imu_latest_frame_fault = True
+        node._imu.latest_frame_fault = True
     with patch.object(demo.time, "monotonic", return_value=1.11):
         observation, _ = demo.BxiExample.snapshot_control_inputs(node)
     assert observation.inference_blocked
-    assert not node._imu_protection_latched
-    assert node._imu_fault_observer.timeout_streak == 0
+    assert not node._imu.protection_latched
+    assert node._imu.fault_observer.timeout_streak == 0
 
 
 @pytest.mark.parametrize("fault", ["stale_stamp", "invalid_quaternion", "receive_gap"])
 def test_callback_frame_fault_blocks_the_next_inference_cycle(demo, fault):
     node = controller(demo)
-    node.imu_required = True
-    node._imu_stamp_observer = Mock()
-    node._imu_stamp_observer.observe.side_effect = [
+    node._imu.required = True
+    node._imu.stamp_observer = Mock()
+    node._imu.stamp_observer.observe.side_effect = [
         ("fresh", 1.0),
         ("stale", 200.0) if fault == "stale_stamp" else ("fresh", 1.0),
     ]
@@ -522,9 +654,9 @@ def test_callback_frame_fault_blocks_the_next_inference_cycle(demo, fault):
     with patch.object(demo.time, "monotonic", return_value=fault_at + 0.001):
         observation, _ = demo.BxiExample.snapshot_control_inputs(node)
     assert observation.inference_blocked
-    assert node._imu_latest_frame_fault
-    assert node._imu_fault_observer.frame_streak == 1
-    assert not node._imu_protection_latched
+    assert node._imu.latest_frame_fault
+    assert node._imu.fault_observer.frame_streak == 1
+    assert not node._imu.protection_latched
 
 
 def test_runtime_does_not_update_state_or_infer_while_imu_is_blocked():
@@ -542,7 +674,7 @@ def test_runtime_does_not_update_state_or_infer_while_imu_is_blocked():
         safety_state_names=frozenset({"com.bxi.basic_actions/zero_torque"}),
     )
     framework = SimpleNamespace(
-        observe_without_inference=Mock(), update=Mock(return_value=frame),
+        observe_without_inference=Mock(return_value=False), update=Mock(return_value=frame),
         current_state_name="com.bxi.basic_actions/normal",
         desired_control_period=0.02, last_motor_frame=Mock(),
     )
@@ -574,7 +706,10 @@ def test_blocked_framework_drops_queued_modes_but_applies_safety_request():
     framework = RobotControlFramework.__new__(RobotControlFramework)
     framework._closed = False
     framework._set_observation = Mock()
-    framework.state_machine = SimpleNamespace(request_transition=Mock())
+    framework.state_machine = SimpleNamespace(
+        request_transition=Mock(),
+        current=SimpleNamespace(orientation_guard_enabled=False),
+    )
     framework._pending_state_requests = [
         ("com.bxi.basic_actions/normal", "remote", None, 0.0, False),
         ("com.bxi.basic_actions/normal", "ui", None, 0.0, True),
@@ -583,7 +718,7 @@ def test_blocked_framework_drops_queued_modes_but_applies_safety_request():
     framework.current_cmd_vel = np.ones(3, dtype=np.float32)
     framework._motor_target = object()
     framework.loop_count = 0
-    observation = object()
+    observation = SimpleNamespace(orientation_unsafe_confirmed=False)
 
     framework.observe_without_inference(
         observation,
@@ -606,9 +741,9 @@ def test_publish_replaces_inflight_inference_and_override_after_imu_fault(demo):
     from bxi_example_py_elf3.framework.mod_api import MotorFrame
 
     node = controller(demo)
-    node.imu_required = True
-    node._imu_last_received_at = 1.0
-    node._imu_latest_frame_fault = True
+    node._imu.required = True
+    node._imu.last_received_at = 1.0
+    node._imu.latest_frame_fault = True
     node.runtime.framework.current_state_name = "com.bxi.basic_actions/normal"
     node._joint_source.update([0.3], [0.0])
     node._motor_override = NamedJointCommandOverride(
@@ -637,7 +772,7 @@ def test_publish_replaces_inflight_inference_and_override_after_imu_fault(demo):
     np.testing.assert_allclose(command.torque, [0.0])
 
     node._joint_source.update([0.5], [0.0])
-    node._imu_fall_protection_latched = True
+    node._imu.fall_protection_latched = True
     with patch.object(demo.time, "monotonic", return_value=1.02):
         demo.BxiExample.publish_motor_frame(node, inferred)
     command = node.act_pub.publish.call_args.args[0]
@@ -677,9 +812,9 @@ def test_transient_imu_guard_gains_match_latched_protection(demo):
 
 def test_motor_override_is_rejected_while_imu_is_unsafe(demo):
     node = controller(demo)
-    node.imu_required = True
-    node._imu_last_received_at = 1.0
-    node._imu_latest_frame_fault = True
+    node._imu.required = True
+    node._imu.last_received_at = 1.0
+    node._imu.latest_frame_fault = True
     node._joint_received = True
     node._motor_override = Mock()
     node._motor_override_last_names = ()
@@ -701,7 +836,7 @@ def test_motor_override_is_rejected_while_imu_is_unsafe(demo):
 
 def test_imu_timeout_log_contains_last_valid_and_invalid_frames(demo):
     node = controller(demo)
-    node.imu_required = False
+    node._imu.required = False
     node.topic_prefix = "simulation/"
     imu = SimpleNamespace(
         header=SimpleNamespace(stamp=SimpleNamespace(sec=1, nanosec=0)),
@@ -716,8 +851,8 @@ def test_imu_timeout_log_contains_last_valid_and_invalid_frames(demo):
     with patch.object(demo.time, "monotonic", return_value=1.05):
         demo.BxiExample.imu_callback(node, imu)
 
-    node.imu_required = True
-    node.imu_runtime_timeout_sec = 0.1
+    node._imu.required = True
+    node._imu.runtime_timeout_sec = 0.1
     node.runtime.framework.current_state_name = "com.bxi.basic_actions/normal"
     order = []
     node.runtime.framework.request_state = Mock(
@@ -727,8 +862,8 @@ def test_imu_timeout_log_contains_last_valid_and_invalid_frames(demo):
     for index, now in enumerate((1.2, 1.221, 1.242, 1.263, 1.284), 1):
         with patch.object(demo.time, "monotonic", return_value=now):
             demo.BxiExample._check_imu_runtime_safety(node)
-        assert node._imu_protection_latched is (index == 5)
-    assert node._imu_protection_latched
+        assert node._imu.protection_latched is (index == 5)
+    assert node._imu.protection_latched
     assert order == ["request", "log"]
     assert node.get_logger().warning.call_count == 6
     node.runtime.framework.request_state.assert_called_once_with(
@@ -750,12 +885,12 @@ def test_imu_timeout_log_contains_last_valid_and_invalid_frames(demo):
 
 def test_imu_startup_timeout_log_reports_no_current_frame(demo):
     node = controller(demo)
-    node.imu_required = True
+    node._imu.required = True
     node.topic_prefix = "hardware/"
-    node.imu_startup_timeout_sec = 1.0
-    node._imu_startup_started_at = None
-    node._imu_startup_timeout_logged = False
-    node._next_imu_startup_warning = 0.0
+    node._imu.startup_timeout_sec = 1.0
+    node._imu.startup_started_at = None
+    node._imu.startup_timeout_logged = False
+    node._imu.next_startup_warning = 0.0
     assert not demo.BxiExample.startup_step(node, 0.0)
     assert not demo.BxiExample.startup_step(node, 1.1)
     error = node.get_logger().error
@@ -770,11 +905,10 @@ def test_imu_startup_timeout_log_reports_no_current_frame(demo):
 
 def test_imu_stamp_warning_does_not_shift_recorded_receive_time(demo):
     node = controller(demo)
-    node.imu_required = True
+    node._imu.required = True
     node.topic_prefix = "hardware/"
-    node._imu_stamp_observer = Mock()
-    node._imu_stamp_observer.observe.return_value = ("stale", 200.0)
-    node._imu_stamp_warning_count = 0
+    node._imu.stamp_observer = Mock()
+    node._imu.stamp_observer.observe.return_value = ("stale", 200.0)
     imu = SimpleNamespace(
         header=SimpleNamespace(stamp=SimpleNamespace(sec=1, nanosec=0)),
         orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0),
@@ -783,9 +917,9 @@ def test_imu_stamp_warning_does_not_shift_recorded_receive_time(demo):
     )
     with patch.object(demo.time, "monotonic", return_value=1.0):
         demo.BxiExample.imu_callback(node, imu)
-    assert node._imu_last_received_at is None
+    assert node._imu.last_received_at is None
     evidence = json.loads(demo.format_imu_evidence(
-        node._imu_frame_recorder.trigger("runtime_timeout", at=1.3)
+        node._imu.frame_recorder.trigger("runtime_timeout", at=1.3)
     ))
     assert evidence["frames"][0]["relative_ms"] == -300.0
     assert evidence["frames"][0]["stamp_status"] == "stale"
@@ -796,10 +930,10 @@ def test_imu_stamp_warning_does_not_shift_recorded_receive_time(demo):
 
 def test_five_stale_imu_stamps_latch_low_stiffness_protection(demo):
     node = controller(demo)
-    node.imu_required = True
+    node._imu.required = True
     node.topic_prefix = "hardware/"
-    node._imu_stamp_observer = Mock()
-    node._imu_stamp_observer.observe.return_value = ("fresh", 1.0)
+    node._imu.stamp_observer = Mock()
+    node._imu.stamp_observer.observe.return_value = ("fresh", 1.0)
     imu = SimpleNamespace(
         header=SimpleNamespace(stamp=SimpleNamespace(sec=1, nanosec=0)),
         orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0),
@@ -808,13 +942,13 @@ def test_five_stale_imu_stamps_latch_low_stiffness_protection(demo):
     )
     with patch.object(demo.time, "monotonic", return_value=1.0):
         demo.BxiExample.imu_callback(node, imu)
-    node._imu_stamp_observer.observe.return_value = ("stale", 150.0)
+    node._imu.stamp_observer.observe.return_value = ("stale", 150.0)
     for count in range(1, 6):
         imu.header.stamp.nanosec = count
         with patch.object(demo.time, "monotonic", return_value=1.0 + count * 0.01):
             demo.BxiExample.imu_callback(node, imu)
-        assert node._imu_protection_latched is (count == 5)
-        assert node._imu_last_received_at == 1.0
+        assert node._imu.protection_latched is (count == 5)
+        assert node._imu.last_received_at == 1.0
     assert node.get_logger().warning.call_count == 5
     evidence = json.loads(node.get_logger().error.call_args.args[0].split("evidence=", 1)[1])
     assert evidence["trigger"] == "frame_fault_confirmed"
@@ -833,9 +967,9 @@ def test_five_stale_imu_stamps_latch_low_stiffness_protection(demo):
 
 def test_five_late_but_valid_imu_frames_latch_protection(demo):
     node = controller(demo)
-    node.imu_required = True
-    node._imu_stamp_observer = Mock()
-    node._imu_stamp_observer.observe.return_value = ("fresh", 1.0)
+    node._imu.required = True
+    node._imu.stamp_observer = Mock()
+    node._imu.stamp_observer.observe.return_value = ("fresh", 1.0)
     imu = SimpleNamespace(
         header=SimpleNamespace(stamp=SimpleNamespace(sec=1, nanosec=0)),
         orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0),
@@ -846,17 +980,18 @@ def test_five_late_but_valid_imu_frames_latch_protection(demo):
         imu.header.stamp.nanosec = count
         with patch.object(demo.time, "monotonic", return_value=1.0 + count * 0.11):
             demo.BxiExample.imu_callback(node, imu)
-    assert node._imu_protection_latched
-    assert node._imu_last_received_at == pytest.approx(1.55)
+    assert node._imu.protection_latched
+    assert node._imu.last_received_at == pytest.approx(1.55)
     assert node.get_logger().warning.call_count == 5
     assert "receive_gap" in node.get_logger().error.call_args.args[0]
 
 
 def test_confirmed_hardware_fall_forces_zero_torque_even_after_imu_loss(demo):
     node = controller(demo)
-    node.imu_required = True
-    node._imu_stamp_observer = Mock()
-    node._imu_stamp_observer.observe.return_value = ("fresh", 1.0)
+    node._imu.required = True
+    node._imu.orientation_guard_active = True
+    node._imu.stamp_observer = Mock()
+    node._imu.stamp_observer.observe.return_value = ("fresh", 1.0)
     roll = np.deg2rad(65) / 2
     imu = SimpleNamespace(
         header=SimpleNamespace(stamp=SimpleNamespace(sec=1, nanosec=0)),
@@ -868,8 +1003,10 @@ def test_confirmed_hardware_fall_forces_zero_torque_even_after_imu_loss(demo):
         imu.header.stamp.nanosec = count
         with patch.object(demo.time, "monotonic", return_value=1.0 + count * 0.01):
             demo.BxiExample.imu_callback(node, imu)
-    assert node._imu_fall_protection_latched
-    node._imu_protection_latched = True
+    assert not node._imu.fall_protection_latched
+    demo.BxiExample.latch_orientation_protection(node)
+    assert node._imu.fall_protection_latched
+    node._imu.protection_latched = True
     node.runtime.framework.current_state_name = "com.bxi.basic_actions/imu_protection"
     node.runtime.framework.request_state = Mock(return_value=True)
     with patch.object(demo.time, "monotonic", return_value=1.05):
@@ -882,7 +1019,7 @@ def test_confirmed_hardware_fall_forces_zero_torque_even_after_imu_loss(demo):
 
 def test_latched_imu_fall_discards_pending_remote_events(demo):
     node = controller(demo)
-    node._imu_fall_protection_latched = True
+    node._imu.fall_protection_latched = True
     node.pending_remote_events.append("walk")
     _, events = demo.BxiExample.snapshot_control_inputs(node)
     assert events == ()

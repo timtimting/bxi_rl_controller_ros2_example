@@ -23,6 +23,7 @@ from bxi_example_py_elf3.framework.runtime.control_scheduler import (
     ControlScheduler,
 )
 from bxi_example_py_elf3.framework.runtime.controller import RobotControlFramework
+from bxi_example_py_elf3.framework.runtime.legacy_mod_compat import orientation_guard_active
 from bxi_example_py_elf3.framework.runtime.logging import LoggingConfig, ScopedLoggers
 from bxi_example_py_elf3.framework.runtime.mod_nodes import ExecutorLike
 from .api import ControlPlatformAdapter
@@ -265,6 +266,11 @@ class RobotControlRuntime:
         with self._framework_lock:
             return self.framework.current_state_name
 
+    @property
+    def orientation_guard_active(self) -> bool:
+        with self._framework_lock:
+            return orientation_guard_active(self.framework.state_machine.current)
+
     def start(self) -> None:
         if self._closed:
             raise RuntimeError("RobotControlRuntime is closed")
@@ -408,9 +414,11 @@ class RobotControlRuntime:
             framework_acquired_ns = time.monotonic_ns()
             cycle_period_sec = self.scheduler.period_sec
             if observation.inference_blocked:
-                self.framework.observe_without_inference(
+                orientation_protected = self.framework.observe_without_inference(
                     observation, safe_state_names=self._platform.safety_state_names
                 )
+                if orientation_protected:
+                    self._platform.latch_orientation_protection()
                 frame = self._platform.safety_motor_frame(
                     observation, self.framework.current_state_name
                 )

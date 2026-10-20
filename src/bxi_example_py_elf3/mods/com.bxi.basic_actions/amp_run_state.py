@@ -5,8 +5,8 @@ import numpy as np
 from numpy.typing import NDArray
 
 from bxi_example_py_elf3.policies import HumanoidGaitPolicyLiteIsaaclab
+from bxi_example_py_elf3.framework.mod_api import OrientationGuardedState
 from bxi_example_py_elf3.framework.mod_api import ResourceHandle
-from bxi_example_py_elf3.framework.mod_api import RobotControlState
 from bxi_example_py_elf3.framework.mod_api import StateBehavior
 from bxi_example_py_elf3.framework.mod_api.transition import (
     EntryFrameProvider,
@@ -18,14 +18,18 @@ if TYPE_CHECKING:
     from bxi_example_py_elf3.framework.mod_api import RobotControlContext
 
 
-class AmpRunState(RobotControlState, EntryFrameProvider, RunningFrameProvider):
+class AmpRunState(OrientationGuardedState, EntryFrameProvider, RunningFrameProvider):
     def __init__(
         self,
         name: str,
         state_id: int,
         policy: ResourceHandle[HumanoidGaitPolicyLiteIsaaclab],
     ) -> None:
-        super().__init__(name, state_id, resources=(policy,))
+        super().__init__(
+            name, state_id,
+            protection_state="com.bxi.basic_actions/zero_torque",
+            resources=(policy,),
+        )
         self._policy = policy
         self.pre_cmd_vel_run = np.zeros(3, dtype=np.float32)
         self.cmd_vel_run = np.zeros(3, dtype=np.float32)
@@ -69,7 +73,6 @@ class AmpRunState(RobotControlState, EntryFrameProvider, RunningFrameProvider):
         return self._motor_frame_from_target(ctx, output.joints)
 
     def on_update(self, ctx: RobotControlContext, dt: float) -> None:
-        if ctx.is_orientation_unsafe(ctx.current_quat_xyzw):
-            ctx.request_state("com.bxi.basic_actions/zero_torque", trigger="safety")
+        if self.orientation_limit_reached(ctx):
             return
         self._apply_frame(ctx, self.sample_running_frame(ctx, dt, advance=True))
