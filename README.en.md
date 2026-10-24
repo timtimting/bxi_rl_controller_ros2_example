@@ -38,6 +38,7 @@ The `src/` directory contains:
 
 1. `elf3_dof29`: Elf3 with 29 DoF.
 2. `elf3_dof31`: Elf3 with 31 DoF, including 2 DoF on the head.
+3. `elf4_dof29`: Elf4 with 29 DoF; the URDF is at `resources/elf4_dof29/urdf/elf4.urdf`.
 
 For USD or XML formats, see [unofficial models](https://github.com/MelodyAI/TienKung-Lab-bxi/tree/main/legged_lab/assets/elf3_lite).
 

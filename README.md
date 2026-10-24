@@ -38,6 +38,7 @@ ROS2 硬件结构：![ROS2 structure hardware](docs/ROS2_structure_hardware.png)
 
 1. `elf3_dof29`：Elf3，29 自由度。
 2. `elf3_dof31`：Elf3，31 自由度（头部 2 自由度）。
+3. `elf4_dof29`：Elf4，29 自由度，URDF 位于 `resources/elf4_dof29/urdf/elf4.urdf`。
 
 USD 或 XML 格式请参考：[unofficial models](https://github.com/MelodyAI/TienKung-Lab-bxi/tree/main/legged_lab/assets/elf3_lite)。
 
