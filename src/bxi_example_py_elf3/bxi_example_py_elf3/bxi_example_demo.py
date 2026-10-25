@@ -359,9 +359,6 @@ class BxiExample(Node):
                 self.runtime.request_state(
                     "com.bxi.basic_actions/pd_brake", trigger="AutoPdbreak"
                 )
-                self.runtime.request_state(
-                    "com.bxi.basic_actions/normal", trigger="AutoRelease"
-                )
             return False
         with self.lock_in:
             return self._joint_received
@@ -418,11 +415,11 @@ class BxiExample(Node):
             self._imu_protection_latched = True
             self.get_logger().error(
                 f"IMU data timeout: no frame for {now - last_received_at:.3f}s; "
-                "entering locked IMU protection state"
+                "locking zero torque; robot will lose support"
             )
         if not self._imu_protection_latched:
             return
-        protection_state = "com.bxi.basic_actions/imu_protection"
+        protection_state = "com.bxi.basic_actions/zero_torque"
         if self.runtime.current_state_name != protection_state:
             accepted = self.runtime.request_state(
                 protection_state,
@@ -431,7 +428,7 @@ class BxiExample(Node):
             )
             if not accepted:
                 self.get_logger().error(
-                    "failed to request locked IMU protection state"
+                    "failed to request locked zero torque after IMU timeout"
                 )
 
     def release_imu_protection(
